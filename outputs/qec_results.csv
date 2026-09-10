@@ -1,0 +1,4 @@
+method,mse_vs_ideal,wasserstein_vs_ideal
+ideal,0.0,0.0
+no_qec,4.3678976134834324e-05,0.00279580414659292
+uniform_qec_repetition_d3,2.0254155522675635e-06,0.00022635550984916776
