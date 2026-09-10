@@ -1,32 +1,33 @@
 """Application aware QEC: protection allocated per logical qubit based
 on the measured sensitivity ranking from run_sensitivity_ranking.py.
 
-This allocation is hardcoded against ONE specific ranking result. If
-the dataset, channel, subject, or generator weights change, rerun
-run_sensitivity_ranking.py and update the tiers below to match, do not
-assume this allocation transfers to a different ranking.
+This is version 2 of the tier allocation, rebuilt after training the
+generator, since the untrained ranking did NOT hold after training,
+it nearly inverted. If you retrain again, subject, weights, or data
+changes, rerun run_sensitivity_ranking.py and update
+TIER_BY_LOGICAL_QUBIT below to match, do not assume any allocation
+carries over.
 
-Measured ranking used for this allocation:
-  logical qubit 1: combined_mse 0.000552  (most sensitive)
-  logical qubit 2: combined_mse 0.000110
-  logical qubit 3: combined_mse 0.000042
-  logical qubit 0: combined_mse 0.000011  (least sensitive)
+Ranking used for THIS allocation (trained weights, 100 windows,
+outputs/trained_weights.npy):
+  logical qubit 3: combined_mse 0.001131  (most sensitive)
+  logical qubit 0: combined_mse 0.001052  (close second)
+  logical qubit 2: combined_mse 0.000885
+  logical qubit 1: combined_mse 0.000595  (least sensitive)
 
 Allocation:
-  logical qubit 1 -> Shor code,       9 physical qubits (heaviest)
+  logical qubit 3 -> Shor code,       9 physical qubits (heaviest)
+  logical qubit 0 -> repetition code, 3 physical qubits (moderate,
+                                        close second in sensitivity)
   logical qubit 2 -> repetition code, 3 physical qubits (moderate)
-  logical qubit 3 -> bare,            1 physical qubit  (no protection)
-  logical qubit 0 -> bare,            1 physical qubit  (no protection)
+  logical qubit 1 -> bare,            1 physical qubit  (no protection)
 
-Total physical qubits: 9 + 3 + 1 + 1 = 14. Two to the fourteen amplitudes
-is trivial memory, nowhere near the 36 qubit wall the uniform Shor
-version hit.
+Total physical qubits: 9 + 3 + 3 + 1 = 16. Two to the sixteen
+amplitudes is trivial memory.
 
-Wire layout on the single 14 wire device:
-  wires 0        -> logical qubit 0 primary (bare)
-  wires 1..9     -> logical qubit 1 block (Shor, primary = wire 1)
-  wires 10..12   -> logical qubit 2 block (repetition, primary = wire 10)
-  wire 13        -> logical qubit 3 primary (bare)
+Wire layout is now computed automatically from TIER_BY_LOGICAL_QUBIT
+at module load time, in logical qubit order, so changing a tier only
+means editing the dictionary below, nothing else in this file.
 """
 
 import numpy as np
@@ -34,16 +35,32 @@ import pennylane as qml
 
 from src.quantum_model import N_QUBITS as N_LOGICAL, N_LAYERS
 
-# wire assignment, in logical qubit order 0, 1, 2, 3
-PRIMARY_WIRES = [0, 1, 10, 13]
-N_PHYSICAL = 14
+TIER_SIZES = {"bare": 1, "repetition": 3, "shor": 9}
 
 TIER_BY_LOGICAL_QUBIT = {
-    0: "bare",
-    1: "shor",
+    0: "repetition",
+    1: "bare",
     2: "repetition",
-    3: "bare",
+    3: "shor",
 }
+
+
+def _build_wire_layout(tier_by_logical_qubit, n_logical):
+    """Assigns physical wire ranges to each logical qubit, in order,
+    based on its tier size. Returns the list of primary wires (one per
+    logical qubit, in logical qubit order) and the total wire count.
+    """
+    primary_wires = []
+    cursor = 0
+    for lq in range(n_logical):
+        tier = tier_by_logical_qubit[lq]
+        size = TIER_SIZES[tier]
+        primary_wires.append(cursor)
+        cursor += size
+    return primary_wires, cursor
+
+
+PRIMARY_WIRES, N_PHYSICAL = _build_wire_layout(TIER_BY_LOGICAL_QUBIT, N_LOGICAL)
 
 
 def _generator_gates(features, weights, wires):
@@ -118,12 +135,8 @@ def _all_physical_wires_for(lq):
     """
     tier = TIER_BY_LOGICAL_QUBIT[lq]
     primary = PRIMARY_WIRES[lq]
-    if tier == "shor":
-        return list(range(primary, primary + 9))
-    elif tier == "repetition":
-        return list(range(primary, primary + 3))
-    else:
-        return [primary]
+    size = TIER_SIZES[tier]
+    return list(range(primary, primary + size))
 
 
 def _build_application_aware_circuit():
@@ -194,8 +207,9 @@ def generate_application_aware_qec_batch(feature_matrix, weights, prob, noise_ty
 def verify_identity(features, weights, n_trials=5):
     """Same discipline as every other module here, confirm encode then
     decode is an identity at zero noise before trusting any noisy
-    result. This circuit is only 14 qubits, so this runs directly,
-    no isolated single qubit workaround needed this time.
+    result. Rerun this every time the tier allocation changes, it does
+    not depend on which tiers are assigned, only on whether the encode
+    and decode gates are wired correctly for those tiers.
     """
     from src.quantum_model import make_ideal_qnode
 

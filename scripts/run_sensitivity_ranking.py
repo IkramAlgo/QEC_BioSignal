@@ -36,6 +36,11 @@ def main():
     parser.add_argument("--max_windows", type=int, default=200)
     parser.add_argument("--noise_prob", type=float, default=0.02)
     parser.add_argument("--n_shots", type=int, default=50)
+    parser.add_argument(
+        "--weights_path",
+        default=None,
+        help="Path to trained weights .npy (from train_generator.py). Falls back to random seed-0 weights if omitted.",
+    )
     args = parser.parse_args()
 
     out_dir = Path(__file__).resolve().parent.parent / "outputs"
@@ -50,7 +55,12 @@ def main():
 
     raw_features = extract_feature_matrix(windows, sfreq)
     features = normalize_features(raw_features)
-    weights = random_weights(seed=0)
+    if args.weights_path:
+        weights = np.load(args.weights_path)
+        print(f"Loaded trained weights from {args.weights_path}")
+    else:
+        weights = random_weights(seed=0)
+        print("No --weights_path given, using random seed-0 weights (untrained baseline)")
 
     print("Running ideal circuit ...")
     ideal_qnode = make_ideal_qnode()
