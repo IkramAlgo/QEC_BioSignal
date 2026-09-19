@@ -1,20 +1,18 @@
 """Train the quantum generator's variational weights via reconstruction loss.
 
-Objective: the circuit's 8 output expectation values (4 <Z> + 4 <X>,
-range [-1,1]) should reconstruct a [-1,1]-scaled version of the SAME 8
-raw biosignal features that were encoded as [0,pi] rotation angles into
-the circuit. This is a plain reconstruction task, not GAN-style
-adversarial training — simpler, verifiable (loss decreasing is an
-honest signal, no mode collapse to debug), and it directly matches the
-"does the model preserve meaningful structure" claim the paper cares
-about.
-
-Trained against the IDEAL (noiseless) circuit only. Noise/QEC evaluation
-happens afterward, reusing these learned weights the same way the
-random seed-0 weights were used for the untrained baseline.
+UPDATED: now trains only on the training split. The held out test
+split is never touched here, run_sensitivity_ranking.py and
+run_application_aware_experiment.py evaluate on that held out portion
+using the same --test_fraction and --seed, so the reported numbers
+are no longer measured on data the generator already saw.
 
 Usage:
   python scripts/train_generator.py data/raw/EPCTL01.edf --channel "C3"
+
+IMPORTANT: use the same --max_windows, --test_fraction, and --seed on
+this script and on run_sensitivity_ranking.py and
+run_application_aware_experiment.py, otherwise the three scripts will
+not agree on which windows are held out as test data.
 """
 
 import argparse
@@ -32,6 +30,7 @@ from src.data_loading import load_eeg_channel
 from src.preprocessing import preprocess_and_segment
 from src.features import extract_feature_matrix
 from src.quantum_model import make_ideal_qnode, N_QUBITS, N_LAYERS
+from src.data_split import train_test_split_indices
 
 
 def normalize_to_range(feature_matrix: np.ndarray, lo: float, hi: float) -> np.ndarray:
@@ -50,6 +49,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--test_fraction", type=float, default=0.2)
     args = parser.parse_args()
 
     out_dir = Path(__file__).resolve().parent.parent / "outputs"
@@ -61,16 +61,28 @@ def main():
     print("Filtering + windowing ...")
     windows = preprocess_and_segment(signal, sfreq, window_sec=args.window_sec)
     windows = windows[: args.max_windows]
-    print(f"  {len(windows)} windows")
+    print(f"  {len(windows)} windows total")
 
     print("Extracting features ...")
     raw_features = extract_feature_matrix(windows, sfreq)
 
-    # Input encoding stays [0, pi] — unchanged from the untrained pipeline.
-    input_features = normalize_to_range(raw_features, 0, np.pi)
-    # Reconstruction TARGET is a separate [-1, 1] scaling of the same raw
-    # features, matching the circuit's expectation-value output range.
-    target_features = normalize_to_range(raw_features, -1, 1)
+    train_idx, test_idx = train_test_split_indices(
+        len(raw_features), test_fraction=args.test_fraction, seed=args.seed
+    )
+    print(
+        f"Split: {len(train_idx)} training windows, {len(test_idx)} held out test windows "
+        f"(test_fraction={args.test_fraction}, seed={args.seed})"
+    )
+    print(
+        "Remember: run_sensitivity_ranking.py and run_application_aware_experiment.py "
+        "must use the SAME --max_windows, --test_fraction, and --seed as this run, "
+        "so they hold out the same windows."
+    )
+
+    train_raw_features = raw_features[train_idx]
+
+    input_features = normalize_to_range(train_raw_features, 0, np.pi)
+    target_features = normalize_to_range(train_raw_features, -1, 1)
 
     ideal_qnode = make_ideal_qnode()
 
@@ -81,20 +93,36 @@ def main():
 
     opt = qml.AdamOptimizer(stepsize=args.lr)
 
-    def batch_loss(w):
+    batch_size = min(16, len(input_features))
+
+    def batch_loss(w, x_batch, t_batch):
         total = 0.0
-        for x_in, x_target in zip(input_features, target_features):
+        for x_in, x_target in zip(x_batch, t_batch):
             out = pnp.stack(ideal_qnode(x_in, w))
             total = total + pnp.sum((out - x_target) ** 2)
-        return total / len(input_features)
+        return total / len(x_batch)
 
-    print(f"Training {args.epochs} epochs on {len(input_features)} windows ...")
+    print(
+        f"Training {args.epochs} epochs on {len(input_features)} TRAINING windows only, "
+        f"mini batch size {batch_size} (reduces peak memory per gradient step) ..."
+    )
     losses = []
+    n_samples = len(input_features)
     for epoch in range(args.epochs):
-        weights, loss = opt.step_and_cost(batch_loss, weights)
-        losses.append(float(loss))
+        perm = np.random.permutation(n_samples)
+        epoch_loss = 0.0
+        n_batches = 0
+        for start in range(0, n_samples, batch_size):
+            batch_idx = perm[start : start + batch_size]
+            x_batch = input_features[batch_idx]
+            t_batch = target_features[batch_idx]
+            weights, loss = opt.step_and_cost(lambda w: batch_loss(w, x_batch, t_batch), weights)
+            epoch_loss += loss
+            n_batches += 1
+        epoch_loss /= n_batches
+        losses.append(float(epoch_loss))
         if epoch % 10 == 0 or epoch == args.epochs - 1:
-            print(f"  epoch {epoch:4d}  loss {loss:.6f}")
+            print(f"  epoch {epoch:4d}  loss {epoch_loss:.6f}")
 
     weights_path = out_dir / "trained_weights.npy"
     np.save(weights_path, np.array(weights))
@@ -106,11 +134,11 @@ def main():
 
     improvement = (1 - losses[-1] / losses[0]) * 100 if losses[0] > 0 else 0.0
     print(f"\nFinal loss: {losses[-1]:.6f}  (started at {losses[0]:.6f})")
-    print(f"Loss reduced by {improvement:.1f}% over training")
+    print(f"Loss reduced by {improvement:.1f}% over training, on training windows only")
     print(
-        "\nIMPORTANT next step: rerun sensitivity ranking and rebuild the "
-        "application-aware tier allocation using these trained weights — "
-        "the untrained ranking is not assumed to hold after training."
+        "\nNEXT: rerun run_sensitivity_ranking.py and run_application_aware_experiment.py "
+        "with matching --max_windows, --test_fraction, and --seed, so evaluation runs on "
+        "the held out test windows, not the training windows."
     )
 
 

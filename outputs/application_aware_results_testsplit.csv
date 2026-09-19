@@ -1,0 +1,5 @@
+method,physical_qubits,mse_vs_ideal,wasserstein_vs_ideal,tiers
+ideal,4,0.0,0.0,
+no_qec,4,0.0008645375890365865,0.0167781108021843,
+uniform_repetition_d3,12,0.0012590141958721867,0.01671343028530841,
+application_aware,16,0.0005794940458398092,0.011856191874038677,"{1: 'shor', 0: 'repetition', 2: 'repetition', 3: 'bare'}"

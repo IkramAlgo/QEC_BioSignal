@@ -1,49 +1,52 @@
 # Application-Aware Quantum Error Correction for Noise-Resilient Biosignal Modeling
 
-A proof-of-concept framework for studying **application-aware quantum error correction (QEC)** in quantum generative models for biomedical signal features.
+A framework for studying **application-aware quantum error correction (QEC)** in quantum generative models for biomedical signal features.
 
 The central idea is simple:
 
-> Not every logical qubit contributes equally to the downstream application. Instead of protecting every qubit with the same error-correcting code, allocate stronger protection to the logical qubits that are empirically more sensitive to noise.
+> Not every logical qubit contributes equally to the downstream application. Instead of protecting every qubit with the same error-correcting code, allocate stronger protection to the logical qubits that are empirically more sensitive to noise, and recompute that allocation per subject rather than assuming it transfers.
 
-This repository currently evaluates that idea on EEG-derived features using a small variational quantum circuit and classical simulation.
+This repository evaluates that idea on EEG-derived features using a small trained variational quantum circuit and classical simulation, validated across 5 subjects and 3 random seeds each.
 
 ---
 
 ## Current Status
 
-**Stage:** Proof of concept
+**Stage:** Validated proof of concept, multi-subject
 
-The current generator is **not trained**. The present experiments focus on:
+The quantum generator is **trained** (reconstruction objective) with a proper held-out test split, evaluation is reported on windows the generator never saw during training. The application-aware allocation is **computed dynamically per subject** from that subject's own measured sensitivity ranking, not copied from a single reference subject.
 
-1. Encoding an EEG-derived feature vector into a small quantum circuit.
-2. Measuring degradation caused by simulated noise.
-3. Establishing ideal, noisy, and QEC baselines.
-4. Ranking logical qubits by application-level sensitivity.
-5. Allocating different QEC strengths according to that ranking.
-6. Comparing application-aware protection against uniform protection.
+The pipeline:
 
-Training the quantum generator to learn the real feature distribution is a planned next stage.
+1. Encode an EEG-derived feature vector into a small quantum circuit.
+2. Train the generator against a reconstruction objective, held-out split enforced.
+3. Measure degradation caused by simulated noise, on held-out windows only.
+4. Rank logical qubits by application-level sensitivity, per subject.
+5. Allocate QEC strength dynamically from that ranking.
+6. Compare application-aware protection against no protection and uniform protection.
+7. Repeat across 5 subjects x 3 seeds and report pooled statistics.
 
 ---
 
 ## Research Question
 
-Can application-aware allocation of quantum error correction provide better protection of application-level outputs than applying the same QEC code uniformly to every logical qubit?
+Can application-aware allocation of quantum error correction provide better protection of application-level outputs than applying the same QEC code uniformly to every logical qubit, and does this hold across different people, not just one recording?
 
-The hypothesis is:
+The hypothesis:
 
-> If logical qubits have different sensitivities to noise, protecting them uniformly can waste physical-qubit resources. A sensitivity-aware strategy may achieve lower application-level error with fewer physical qubits than uniform heavy protection.
+> If logical qubits have different sensitivities to noise, protecting them uniformly can waste physical-qubit resources or actively hurt performance. A sensitivity-aware strategy, recalibrated per subject, achieves lower application-level error than uniform protection.
+
+This hypothesis is now supported by evidence across 5 subjects, not just asserted from a single case.
 
 ---
 
 ## Pipeline
 
 ```text
-ANPHY-Sleep EDF
+ANPHY-Sleep EDF (5 subjects)
        |
        v
-EEG channel selection
+EEG channel selection (C3)
        |
        v
 10-second windows
@@ -55,19 +58,27 @@ Biomedical feature extraction
 8-dimensional feature vector
        |
        v
-4-qubit variational quantum circuit
+Train/test split (80/20, per subject, per seed)
+       |
+       v
+Train 4-qubit variational generator (reconstruction loss, training windows only)
+       |
+       v
+Evaluate on HELD-OUT windows only
        |
        +-------------------+
        |                   |
        v                   v
-    Ideal             Noisy circuit
+    Ideal             Noisy circuit (depolarizing, p=0.02)
                            |
                            v
                     QEC strategies
                     /      |       \
                    /       |        \
               No QEC   Uniform     Application-
-                        QEC         Aware QEC
+                        Repetition   Aware QEC
+                        (d=3)        (per-subject
+                                      calibration)
                    \       |        /
                     \      |       /
                      v     v       v
@@ -75,27 +86,27 @@ Biomedical feature extraction
                        comparison
                            |
                            v
-                  MSE + Wasserstein
+                  MSE + Wasserstein, pooled across
+                  5 subjects x 3 seeds
 ```
 
 ---
 
 ## Dataset and Signal Representation
 
-The prototype operates on overnight EEG data stored in EDF format.
+The prototype operates on overnight EEG data stored in EDF format, ANPHY-Sleep.
 
-The current experiments use:
+Current experiments use:
 
-* **Subject:** EPCTL01
+* **Subjects:** EPCTL01 through EPCTL05
 * **Channel:** C3
 * **Window length:** 10 seconds
-* **Primary experiment:** 100 windows
+* **Windows per subject:** 100 (80 training, 20 held out)
+* **Seeds per subject:** 0, 1, 2
 * **Sampling rate:** 1000 Hz in the underlying EEG data
 * **Quantum input:** 8-dimensional feature vector
 
-The raw EEG waveform is **not directly passed to the quantum circuit**.
-
-Instead, each EEG window is converted into eight features:
+Each EEG window is converted into eight features:
 
 1. Delta band power
 2. Theta band power
@@ -106,13 +117,13 @@ Instead, each EEG window is converted into eight features:
 7. Spectral entropy
 8. Autocorrelation
 
-The features are normalized to `[0, π]` before quantum encoding.
+Features are normalized to `[0, π]` for quantum encoding. A separate `[-1, 1]` rescaling of the same raw features is used as the training reconstruction target, matching the circuit's expectation-value output range.
 
 ---
 
 ## Quantum Generator
 
-The current prototype uses a deliberately small **4-qubit variational quantum circuit**.
+A **4-qubit variational quantum circuit**, now trained rather than using fixed random weights.
 
 Each logical qubit receives two input features:
 
@@ -121,300 +132,152 @@ feature[2i]     -> RY
 feature[2i + 1] -> RZ
 ```
 
-The circuit contains two variational layers.
+Two variational layers, each applying RY, RZ, then a CNOT ring.
 
-Each layer applies:
+Output: eight expectation values, `<Z0..Z3>` and `<X0..X3>`.
 
-```text
-RY
-RZ
-CNOT ring
-```
+**Training objective:** reconstruction. The circuit's 8 output expectation values are trained to reconstruct a `[-1, 1]`-scaled version of the same 8 input features, using the Adam optimizer with mini-batch gradient steps. Trained only on the 80% training split, per subject, per seed. Typical loss reduction: 73-86% over 200 epochs.
 
-The circuit produces eight expectation values:
-
-```text
-<Z0>, <Z1>, <Z2>, <Z3>,
-<X0>, <X1>, <X2>, <X3>
-```
-
-These eight measurements form the generated feature representation.
-
-The implementation uses PennyLane.
+Implementation uses PennyLane.
 
 ---
 
-# QEC Experiments
+## QEC Methods
 
-## 1. Ideal Circuit
+### 1. Ideal circuit
+No noise, no QEC. Reference distribution, MSE and Wasserstein are zero by definition.
 
-The ideal circuit is used as the reference distribution.
+### 2. No QEC
+Depolarizing noise, `p = 0.02`, applied directly to the 4 physical qubits. No correction.
 
-No noise and no QEC are applied.
+### 3. Uniform repetition code
+Distance-3 bit-flip repetition code applied identically to all 4 logical qubits, 12 physical qubits total.
 
-```text
-4 logical qubits
-4 physical qubits
-```
+**Important finding:** a bit-flip repetition code only corrects one of the three error types present in depolarizing noise. Pooled across all 5 subjects, uniform repetition is **32% worse than no protection at all** on MSE. This is a genuine, diagnosed limitation, not a bug, confirmed by testing the same code against bit-flip-only noise (where it works correctly) versus full depolarizing noise (where it does not). This result directly motivates application-aware allocation rather than assuming more QEC is always better.
 
-The ideal result is defined as zero distance from itself:
+### 4. Application-aware QEC (dynamic, per subject)
 
-```text
-MSE = 0
-Wasserstein = 0
-```
+For each subject, independently:
 
----
+1. Measure per-logical-qubit sensitivity on that subject's held-out windows.
+2. Rank the 4 logical qubits by measured MSE degradation.
+3. Allocate protection tiers from that ranking: most sensitive qubit gets a 9-qubit Shor code (protects all Pauli error types), next two qubits get a 3-qubit repetition code, least sensitive qubit gets no protection.
+4. Total: 16 physical qubits (9 + 3 + 3 + 1).
 
-## 2. No QEC
+The allocation is **not fixed**. Training the generator, or evaluating a different subject, changes which qubit is most sensitive; the ranking is recomputed and the allocation rebuilt every time. An earlier version of this project used one allocation frozen from a single subject; testing across 5 subjects showed this does not generalize (see Multi-Subject Results below), which is why allocation is now computed dynamically at runtime from `outputs/sensitivity_ranking.csv`.
 
-The noisy baseline applies depolarizing noise with:
-
-```text
-p = 0.02
-```
-
-No error correction is applied.
-
-```text
-4 logical qubits
-4 physical qubits
-```
-
-This establishes how much the application-level output degrades without QEC.
+Every application-aware circuit passes a zero-noise identity check (encode-then-decode must exactly reproduce the ideal circuit at `p=0`) before any noisy result is trusted.
 
 ---
 
-## 3. Uniform Repetition Code
+## Multi-Subject Results
 
-The uniform QEC baseline protects all four logical qubits with a distance-3 repetition code.
+Validated across **5 subjects (EPCTL01-EPCTL05) x 3 seeds each = 15 runs**, held-out test windows only, per-subject dynamic allocation.
 
-```text
-4 logical qubits
-12 physical qubits
-3 physical qubits / logical qubit
-```
+### Pooled results (mean, all 15 runs)
 
-This provides a useful comparison against the application-aware strategy.
+| Method | Physical Qubits | MSE vs Ideal | Wasserstein vs Ideal |
+|---|---:|---:|---:|
+| Ideal | 4 | 0.000000 | 0.000000 |
+| No QEC | 4 | 0.000847 | 0.016773 |
+| Uniform Repetition (d=3) | 12 | 0.001120 | 0.015989 |
+| **Application-Aware QEC** | **16** | **0.000638** | **0.012932** |
 
-An important observation from the current experiment is that **uniform protection does not automatically produce better application-level results**. In the current configuration, the uniform repetition result is worse than the unprotected baseline.
+### Improvement over no QEC
 
-This motivates the application-aware allocation strategy rather than assuming that more QEC is always better.
+* **Application-aware: 24.6% lower MSE, 22.9% lower Wasserstein distance**
+* Uniform repetition: **32.2% worse** MSE, 4.7% better Wasserstein
 
----
+### Improvement over uniform repetition
 
-# 4. Application-Aware QEC
+* **Application-aware: 43.0% lower MSE, 19.1% lower Wasserstein distance**
 
-The application-aware strategy first measures the sensitivity of each logical qubit.
+Application-aware QEC won on MSE for all 5 subjects. On Wasserstein distance it won for 4 of 5 subjects; EPCTL03 was the one exception, coming in slightly worse than no QEC on that metric only. This is reported plainly as a known exception rather than smoothed over.
 
-The current sensitivity ranking is:
-
-| Rank | Logical qubit | Combined MSE |
-| ---: | ------------: | -----------: |
-|    1 |       Qubit 1 |    0.0005517 |
-|    2 |       Qubit 2 |    0.0001098 |
-|    3 |       Qubit 3 |    0.0000424 |
-|    4 |       Qubit 0 |    0.0000107 |
-
-The protection allocation is then:
-
-| Logical qubit | Sensitivity | Protection     | Physical qubits |
-| ------------- | ----------- | -------------- | --------------: |
-| Qubit 1       | Highest     | Shor code      |               9 |
-| Qubit 2       | High        | Repetition d=3 |               3 |
-| Qubit 3       | Lower       | Bare           |               1 |
-| Qubit 0       | Lowest      | Bare           |               1 |
-| **Total**     |             |                |          **14** |
-
-Therefore:
-
-```text
-4 logical qubits
-        |
-        +-- Qubit 0 -> bare
-        +-- Qubit 1 -> Shor
-        +-- Qubit 2 -> repetition
-        +-- Qubit 3 -> bare
-        |
-        v
-14 physical qubits
-```
-
-This is the central experiment in the repository.
-
-The allocation is derived from the measured sensitivity ranking rather than chosen uniformly.
+This result required fixing an earlier methodology issue: initial single-subject results were partly measured on windows the generator had already trained on. A proper 80/20 train/test split was added, and all reported numbers above are held-out only.
 
 ---
 
-# Current Experimental Results
+## Why Dynamic, Per-Subject Allocation?
 
-The main application-aware experiment was run on:
+An earlier version of this project used one allocation, built from a single subject's sensitivity ranking, applied unchanged to every subject. Testing across 5 subjects showed this does **not** generalize: the frozen allocation only helped on 2 of 5 subjects, and on the other 3, both uniform and application-aware protection actively hurt performance relative to no protection at all.
 
-```text
-Subject: EPCTL01
-Channel: C3
-Windows: 100
-Window duration: 10 seconds
-Noise probability: p = 0.02
-```
-
-### Results
-
-| Method                    | Physical Qubits | MSE vs Ideal ↓ | Wasserstein vs Ideal ↓ |
-| ------------------------- | --------------: | -------------: | ---------------------: |
-| Ideal                     |               4 |       0.000000 |               0.000000 |
-| No QEC                    |               4 |     0.00012359 |             0.00527125 |
-| Uniform Repetition d=3    |              12 |     0.00044092 |             0.00871476 |
-| **Application-Aware QEC** |          **14** | **0.00006999** |         **0.00345390** |
-
-### Application-aware improvement
-
-Relative to the no-QEC baseline:
-
-* **MSE is reduced by approximately 43%**
-* **Wasserstein distance is reduced by approximately 34%**
-
-The application-aware result is also substantially better than the uniform repetition result in this experiment.
-
-However, these results should currently be interpreted as a **proof-of-concept result**, not as a general performance claim. The experiment currently uses one subject/channel configuration and an untrained quantum generator.
+Rebuilding the allocation per subject, from that subject's own ranking, resolved this: application-aware now wins on MSE for all 5 subjects. This is treated as a central finding of the project, not an implementation detail: **noise-resilient QEC for this kind of generative model needs to be calibrated per subject, not assumed to transfer.**
 
 ---
 
-# Why Application-Aware QEC?
+## Resource Comparison
 
-A uniform strategy treats all logical qubits as equally important.
-
-That can be inefficient when the downstream application is sensitive to some quantum outputs more than others.
-
-This project instead uses an application-level sensitivity analysis:
+A full Shor-code implementation on all 4 logical qubits simultaneously would require:
 
 ```text
-Measure sensitivity
-       |
-       v
-Rank logical qubits
-       |
-       v
-Assign QEC strength
-       |
-       +---- High sensitivity -> stronger code
-       |
-       +---- Medium sensitivity -> moderate code
-       |
-       +---- Low sensitivity -> little/no protection
+4 x 9 = 36 physical qubits
 ```
 
-The objective is not simply to maximize the amount of error correction.
+Full statevector simulation of 36 qubits requires roughly 1 TB of memory, not feasible on standard hardware. The application-aware configuration instead requires:
 
-The objective is:
+```text
+9 + 3 + 3 + 1 = 16 physical qubits
+```
 
-> **Minimize application-level error while controlling physical-qubit overhead.**
+making the experiment tractable while still giving full Pauli-error protection to the qubit(s) that need it most.
 
 ---
 
-# Resource Comparison
-
-The current experiment demonstrates an important simulator constraint.
-
-A full Shor-code implementation on all four logical qubits would require:
+## Repository Structure
 
 ```text
-4 × 9 = 36 physical qubits
-```
-
-A statevector simulation of a 36-qubit circuit is prohibitively expensive for the current local environment.
-
-The application-aware configuration instead requires:
-
-```text
-9 + 3 + 1 + 1 = 14 physical qubits
-```
-
-This makes the mixed-protection experiment practical while still applying strong protection to the most sensitive logical qubit.
-
-The 14-qubit application-aware circuit also passes a zero-noise identity check before noisy experiments are trusted.
-
----
-
-# Validation
-
-Before running the application-aware noisy experiment, the implementation verifies that the encoded-and-decoded circuit reproduces the ideal circuit when the noise probability is zero.
-
-The current validation reports:
-
-```text
-Identity check passed across 5 trials,
-ideal matches application aware circuit at zero noise.
-```
-
-This check is important because QEC should not introduce an application-level change in the absence of noise.
-
----
-
-# Repository Structure
-
-```text
-QEC_BioSignal/
+qec_biosignal/
 │
 ├── README.md
 ├── requirements.txt
-├── verify_shor.py
 │
 ├── src/
-│   ├── __init__.py
-│   ├── application_aware_qec.py
 │   ├── data_loading.py
-│   ├── features.py
-│   ├── metrics.py
 │   ├── preprocessing.py
+│   ├── features.py
+│   ├── data_split.py
 │   ├── quantum_model.py
 │   ├── repetition_code.py
-│   └── shor_code.py
+│   ├── shor_code.py
+│   ├── application_aware_qec.py
+│   └── metrics.py
 │
 ├── scripts/
 │   ├── inspect_edf.py
-│   ├── run_baseline_experiment.py
-│   ├── run_qec_experiment.py
+│   ├── train_generator.py
 │   ├── run_sensitivity_ranking.py
 │   ├── run_application_aware_experiment.py
-│   └── benchmark_12qubit.py
+│   └── run_multi_subject_study.py
+│
+├── data/raw/           (EDF files, excluded from version control)
 │
 └── outputs/
-    ├── application_aware_results.csv
-    ├── application_aware_plot.png
-    ├── application_aware_journal_figure.png
-    ├── baseline_results.csv
-    ├── baseline_plot.png
-    ├── qec_results.csv
-    ├── qec_plot.png
-    └── sensitivity_ranking.csv
+    ├── trained_weights.npy
+    ├── training_loss.csv
+    ├── sensitivity_ranking.csv
+    ├── application_aware_results_testsplit.csv
+    ├── application_aware_plot_testsplit.png
+    └── multi_subject_results.csv
 ```
-
-The repository currently contains the baseline, QEC, sensitivity-ranking, and application-aware experiment implementations.
 
 ---
 
-# Installation
-
-Create the environment:
+## Installation
 
 ```bash
 python -m venv qec_biosignal_env
 ```
 
-### Windows
-
+Windows:
 ```powershell
 qec_biosignal_env\Scripts\activate
 ```
 
-### Linux/macOS
-
+Linux/macOS:
 ```bash
 source qec_biosignal_env/bin/activate
 ```
-
-Install dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -422,17 +285,11 @@ pip install -r requirements.txt
 
 ---
 
-# Data
+## Data
 
-Place an EDF recording in:
+Place EDF recordings in `data/raw/`. Raw EEG recordings are excluded from version control.
 
-```text
-data/raw/
-```
-
-Raw EEG recordings are intentionally excluded from version control.
-
-Inspect an EDF file:
+Inspect a file's channel names before assuming ANPHY's naming is consistent across subjects:
 
 ```bash
 python scripts/inspect_edf.py data/raw/YOUR_FILE.edf
@@ -440,162 +297,56 @@ python scripts/inspect_edf.py data/raw/YOUR_FILE.edf
 
 ---
 
-# Running the Experiments
+## Running the Experiments
 
-## Baseline
-
-```bash
-python scripts/run_baseline_experiment.py data/raw/YOUR_FILE.edf --channel "C3"
-```
-
-## QEC experiment
+Full pipeline for one subject, one seed:
 
 ```bash
-python scripts/run_qec_experiment.py data/raw/YOUR_FILE.edf --channel "C3"
+python scripts/train_generator.py data/raw/EPCTL01.edf --channel "C3" --max_windows 100 --seed 0
+python scripts/run_sensitivity_ranking.py data/raw/EPCTL01.edf --channel "C3" --max_windows 100 --seed 0 --weights_path outputs/trained_weights.npy
+python scripts/run_application_aware_experiment.py data/raw/EPCTL01.edf --channel "C3" --max_windows 100 --seed 0 --weights_path outputs/trained_weights.npy
 ```
 
-## Sensitivity ranking
+`train_generator.py` must run first, same subject and seed, immediately before the other two, since the ranking and evaluation scripts read `outputs/trained_weights.npy` from that run.
+
+Full multi-subject, multi-seed study, edit the `SUBJECTS` list at the top of the script first:
 
 ```bash
-python scripts/run_sensitivity_ranking.py data/raw/YOUR_FILE.edf --channel "C3"
+python scripts/run_multi_subject_study.py
 ```
 
-## Application-aware QEC
-
-Example:
-
-```bash
-python scripts/run_application_aware_experiment.py data/raw/EPCTL01.edf --channel "C3" --max_windows 100
-```
-
-The application-aware experiment performs:
-
-1. EEG loading
-2. Windowing
-3. Feature extraction
-4. Zero-noise identity verification
-5. Ideal simulation
-6. No-QEC noisy simulation
-7. Uniform repetition-code simulation
-8. Application-aware mixed-QEC simulation
-9. MSE comparison
-10. Wasserstein comparison
-11. Result export
-12. Plot generation
+This runs the full train/rank/evaluate sequence for every subject and seed automatically and writes `outputs/multi_subject_results.csv`.
 
 ---
 
-# Output Files
+## Important Limitations
 
-The application-aware experiment produces:
-
-```text
-outputs/application_aware_results.csv
-outputs/application_aware_plot.png
-```
-
-The repository also contains the current sensitivity ranking and experimental figures.
+* Statistical testing so far compares means; no paired significance test has been run yet.
+* No classical baseline has been evaluated; the case for using a quantum approach specifically is not yet made.
+* No downstream clinical task (e.g. sleep-stage classification) has been evaluated yet, despite hypnograms being available for these subjects.
+* All noise is simulated (depolarizing channel); no real quantum hardware has been used.
+* Current results are on ANPHY-Sleep; the planned move to Sleep-EDF Expanded for the primary reported dataset has not yet happened.
+* 5 subjects, 20 held-out windows each; both numbers are planned to increase.
 
 ---
 
-# Important Limitations
+## Next Research Steps
 
-The current results should not yet be interpreted as evidence that application-aware QEC is universally superior.
-
-Current limitations include:
-
-* The quantum generator is **not trained**.
-* The main reported experiment uses one subject/channel configuration.
-* The current sensitivity ranking is tied to the specific experiment.
-* The application-aware allocation should be recomputed when the dataset, channel, subject, or generator weights change.
-* The current noise model is simulated rather than hardware-derived.
-* The current study evaluates application-level feature reconstruction rather than a downstream clinical task.
-* Statistical significance and multi-subject generalization have not yet been established.
-* The current experiment does not yet evaluate hardware execution.
-
-The sensitivity-based allocation is intentionally tied to the measured ranking; it should not be assumed to transfer unchanged to another dataset, channel, subject, or set of generator weights.
+1. **Scale to 10 subjects.**
+2. **Increase held-out window count per subject** for more stable evaluation.
+3. **Statistical testing:** paired test (e.g. Wilcoxon signed-rank) across subjects, reporting p-values alongside percentage improvements.
+4. **Classical baseline:** a non-quantum denoising or mitigation method through the same pipeline and metrics.
+5. **Downstream task:** sleep-stage classification accuracy under each QEC method, using existing hypnograms.
+6. **Hardware validation:** at least a small-scale run on real quantum hardware.
+7. **Dataset switch:** move primary results to Sleep-EDF Expanded, keep ANPHY as supporting evidence.
 
 ---
 
-# Next Research Steps
+## Research Direction
 
-The next stages of the project are:
+This project explores the intersection of quantum error correction, quantum machine learning, generative modeling, biomedical signal processing, EEG analysis, application-aware resource allocation, and noise-resilient quantum computing.
 
-### 1. Train the quantum generator
-
-Move from the current untrained variational circuit toward a trained generative model.
-
-Possible objectives include:
-
-* reconstruction loss
-* MMD/distribution matching
-* adversarial training
-* hybrid quantum-classical generative training
-
-### 2. Recompute sensitivity after training
-
-Training may change which logical qubits are most important.
-
-Therefore:
-
-```text
-Train generator
-      ↓
-Measure sensitivity
-      ↓
-Allocate QEC
-      ↓
-Evaluate noisy performance
-```
-
-should become an iterative experimental pipeline.
-
-### 3. Evaluate additional noise models
-
-The current framework supports:
-
-* depolarizing noise
-* bit-flip noise
-* phase-flip noise
-* readout error
-
-Additional experiments can evaluate different error channels and combinations.
-
-### 4. Multi-subject evaluation
-
-The current proof of concept should be expanded to multiple subjects and EEG channels.
-
-### 5. Statistical evaluation
-
-Future experiments should report:
-
-* mean ± standard deviation
-* confidence intervals
-* repeated seeds
-* statistical tests
-* physical-qubit overhead
-* runtime
-* robustness across subjects
-
-### 6. Hardware validation
-
-After simulator validation, the most promising configurations can be evaluated on available quantum hardware or realistic hardware noise models.
-
----
-
-# Research Direction
-
-This project explores the intersection of:
-
-* Quantum error correction
-* Quantum machine learning
-* Generative modeling
-* Biomedical signal processing
-* EEG analysis
-* Application-aware resource allocation
-* Noise-resilient quantum computing
-
-The broader research question is whether QEC should be designed only around **physical error rates**, or whether the requirements of the **downstream application** should also determine where computational resources are spent.
+The broader research question: should QEC be designed only around physical error rates, or should the requirements of the downstream application, and the specific person generating the data, also determine where computational resources are spent?
 
 ---
 

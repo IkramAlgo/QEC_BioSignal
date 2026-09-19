@@ -1,15 +1,11 @@
 """Per logical qubit noise sensitivity ranking.
 
-Runs the plain 4 qubit generator, ideal versus noisy (no QEC at all),
-and measures degradation SEPARATELY for each of the 4 logical qubits
-instead of one aggregated number. That per qubit ranking is what
-decides which logical qubits get heavy protection (Shor, 9 physical
-qubits) and which get light or no protection, in the application aware
-allocation. This only ever touches the existing 4 qubit circuit, so it
-carries none of the memory cost the full Shor run has.
+UPDATED: evaluates only on the held out TEST split, using the same
+--max_windows, --test_fraction, and --seed as train_generator.py, so
+this ranking is measured on windows the generator never trained on.
 
 Usage:
-  python scripts/run_sensitivity_ranking.py data/raw/YOUR_FILE.edf --channel "C3" --max_windows 20
+  python scripts/run_sensitivity_ranking.py data/raw/YOUR_FILE.edf --channel "C3" --max_windows 100 --weights_path outputs\\trained_weights.npy
 """
 
 import argparse
@@ -26,6 +22,7 @@ from src.preprocessing import preprocess_and_segment
 from src.features import extract_feature_matrix
 from src.quantum_model import make_ideal_qnode, random_weights, normalize_features
 from src.repetition_code import generate_storage_no_qec_batch
+from src.data_split import train_test_split_indices
 
 
 def main():
@@ -36,6 +33,8 @@ def main():
     parser.add_argument("--max_windows", type=int, default=200)
     parser.add_argument("--noise_prob", type=float, default=0.02)
     parser.add_argument("--n_shots", type=int, default=50)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--test_fraction", type=float, default=0.2)
     parser.add_argument(
         "--weights_path",
         default=None,
@@ -51,10 +50,17 @@ def main():
 
     windows = preprocess_and_segment(signal, sfreq, window_sec=args.window_sec)
     windows = windows[: args.max_windows]
-    print(f"{len(windows)} windows of {args.window_sec}s")
+    print(f"{len(windows)} windows total")
 
     raw_features = extract_feature_matrix(windows, sfreq)
-    features = normalize_features(raw_features)
+    all_features = normalize_features(raw_features)
+
+    train_idx, test_idx = train_test_split_indices(
+        len(raw_features), test_fraction=args.test_fraction, seed=args.seed
+    )
+    print(f"Evaluating on {len(test_idx)} HELD OUT test windows (held out from training)")
+    features = all_features[test_idx]
+
     if args.weights_path:
         weights = np.load(args.weights_path)
         print(f"Loaded trained weights from {args.weights_path}")
@@ -64,14 +70,14 @@ def main():
 
     print("Running ideal circuit ...")
     ideal_qnode = make_ideal_qnode()
-    ideal_outputs = np.array([ideal_qnode(f, weights) for f in features])  # shape (n_windows, 8)
+    ideal_outputs = np.array([ideal_qnode(f, weights) for f in features])
 
     print(f"Running noisy circuit, no QEC, depolarizing p={args.noise_prob} ...")
     noisy_outputs = generate_storage_no_qec_batch(
         features, weights, args.noise_prob, "depolarizing", args.n_shots
-    )  # shape (n_windows, 8)
+    )
 
-    n_logical = ideal_outputs.shape[1] // 2  # 4 logical qubits, columns are [Z0..Z3, X0..X3]
+    n_logical = ideal_outputs.shape[1] // 2
 
     rows = []
     for lq in range(n_logical):
@@ -98,8 +104,7 @@ def main():
     print(table.to_string(index=False))
     print(
         "\nRank 1 is the most noise sensitive logical qubit, give it the heaviest "
-        "protection (Shor, 9 physical qubits). Lowest ranked qubits can take the "
-        "repetition code (3 physical qubits) or no protection at all."
+        "protection. This ranking was measured on held out test windows only."
     )
 
 
