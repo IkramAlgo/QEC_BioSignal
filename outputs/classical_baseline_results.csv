@@ -1,0 +1,4 @@
+method,mse_vs_ideal,wasserstein_vs_ideal,note
+classical_ideal,0.0,0.0,"ground truth, zero error by definition"
+classical_single_measurement,0.023192698656118543,0.018965907507007662,"1 shot, NOT comparable to any quantum column, all of which average 50 shots"
+classical_averaged_50_shots,0.0007187845288023673,0.017435865106506035,"FAIR baseline, same shot count as every quantum method"
