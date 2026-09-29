@@ -1,27 +1,33 @@
 """Downstream task: does the protected signal still support sleep
 stage classification, not just raw fidelity to the ideal circuit.
 
+THIS IS THE SINGLE AUTHORITATIVE VERSION of this file, combining
+everything built across this project: wake-period window expansion,
+group-aware epoch splitting, the raw-output sanity check, and saving
+predictions to outputs/downstream_predictions_combined.csv for
+pooling across subjects and seeds. Do not let another tool or session
+rebuild this file from a partial view, it has silently dropped pieces
+of this before.
+
 Design:
   - Logistic regression, matching the precedent set in the earlier
-    QGAN paper. This experiment tests whether the signal preserves
-    classifiable structure, not whether a stronger classifier can be
-    built.
+    QGAN paper.
   - Trained ONCE on ideal circuit outputs from the training windows,
     then frozen and evaluated identically against every method's test
-    outputs, no_qec, uniform_repetition_d3, classical_averaged_50_shots,
-    application_aware. This is the realistic scenario: a classifier
-    trained on clean data, deployed against whatever signal it
-    actually receives.
-  - Uses a GROUP AWARE split (see src/data_split.py), NOT the plain
-    window level split used by the fidelity experiments elsewhere in
-    this project. A hypnogram epoch spans 3 windows; splitting by
-    window instead of by epoch would let near duplicate signal leak
-    between train and test.
-  - 'L' labeled epochs (lights off / movement) are dropped entirely.
-  - Reports accuracy and balanced accuracy for context, macro F1
-    across all stages, and N1 F1 as the headline metric, consistent
-    with the minority class framing already established in the prior
-    QGAN paper.
+    outputs.
+  - Window budget starts at --max_windows AFTER skipping the leading
+    unlabeled/'L' prefix, and auto-expands if that budget contains
+    fewer than 2 distinct sleep stages (some subjects, e.g. EPCTL04,
+    stay awake far longer after lights-off than others).
+  - GROUP AWARE split (src/data_split.py), not the plain window level
+    split used by the fidelity experiments, so no 30-second epoch is
+    split across train and test.
+  - 'L' labeled epochs are dropped entirely.
+  - Every run's raw predictions are appended to
+    outputs/downstream_predictions_combined.csv, so
+    analyze_downstream_classification.py can pool across every
+    subject and seed, this is what run_downstream_study.py's
+    resume/skip logic checks against too.
 
 Usage:
   python scripts/run_downstream_classification.py data/raw/EPCTL01.edf data/raw/EPCTL01.txt --channel "C3" --max_windows 100 --seed 0 --weights_path outputs/trained_weights.npy
@@ -45,7 +51,7 @@ from src.quantum_model import make_ideal_qnode, normalize_features
 from src.repetition_code import generate_storage_no_qec_batch, generate_repetition_qec_batch
 from src.application_aware_qec import ApplicationAwareQEC, build_tiers_from_ranking
 from src.classical_baseline import generate_classical_averaged_batch
-from src.hypnogram import load_hypnogram, epochs_to_window_labels
+from src.hypnogram import load_hypnogram, epochs_to_window_labels, find_diverse_window_range
 from src.data_split import group_train_test_split_indices
 
 
@@ -75,19 +81,39 @@ def main():
 
     print(f"Loading channel '{args.channel}' from {args.edf_path} ...")
     signal, sfreq = load_eeg_channel(args.edf_path, args.channel)
-    windows = preprocess_and_segment(signal, sfreq, window_sec=args.window_sec)
-    windows = windows[: args.max_windows]
-    raw_features = extract_feature_matrix(windows, sfreq)
-    encode_features_all = normalize_features(raw_features)
 
     print(f"Loading hypnogram from {args.hypnogram_path} ...")
     epochs = load_hypnogram(args.hypnogram_path)
+    offset_windows, search_windows = find_diverse_window_range(
+        epochs, window_sec=int(args.window_sec), min_windows=args.max_windows,
+        drop_labels=("L",), min_classes=2,
+    )
+    print(
+        f"First usable (non-L) epoch starts at window {offset_windows} "
+        f"({offset_windows * args.window_sec:.0f}s into the recording)."
+    )
+    if search_windows > args.max_windows:
+        print(
+            f"First {args.max_windows} windows after that were all one sleep stage "
+            f"(e.g. still awake) -- expanded to {search_windows} windows to get "
+            f"at least 2 distinct stages for the classifier to learn from."
+        )
+
+    windows = preprocess_and_segment(signal, sfreq, window_sec=args.window_sec)
+    windows = windows[offset_windows : offset_windows + search_windows]
+    raw_features = extract_feature_matrix(windows, sfreq)
+    encode_features_all = normalize_features(raw_features)
+
     window_label, epoch_groups = epochs_to_window_labels(
-        epochs, window_sec=int(args.window_sec), max_windows=len(raw_features), drop_labels=("L",)
+        epochs,
+        window_sec=int(args.window_sec),
+        max_windows=len(raw_features),
+        drop_labels=("L",),
+        offset_windows=offset_windows,
     )
     print(
         f"{len(epoch_groups)} complete, labeled epochs covering {len(window_label)} windows "
-        f"('L' epochs and any epoch not fully inside max_windows are dropped)"
+        f"('L' epochs and any epoch not fully inside the window budget are dropped)"
     )
     label_counts = pd.Series(list(window_label.values())).value_counts()
     print(f"Window label distribution:\n{label_counts.to_string()}")
@@ -148,25 +174,55 @@ def main():
         classical_targets, args.noise_prob, args.n_shots
     )
 
+    # Sanity check: confirm methods that might produce identical
+    # classification results are NOT producing literally identical raw
+    # outputs, which would indicate a real bug rather than the benign
+    # explanation that small residual differences do not cross the
+    # classifier's decision boundary.
+    for pair in [("ideal", "no_qec"), ("uniform_repetition_d3", "application_aware")]:
+        a, b = conditions[pair[0]], conditions[pair[1]]
+        if np.allclose(a, b, atol=1e-9):
+            print(
+                f"\nWARNING: {pair[0]} and {pair[1]} raw outputs are numerically identical, "
+                "not just producing the same predicted labels. This suggests a real bug, "
+                "investigate before trusting any result from this run."
+            )
+        else:
+            max_diff = np.max(np.abs(a - b))
+            print(
+                f"Sanity check: {pair[0]} vs {pair[1]} raw outputs differ (max abs diff "
+                f"{max_diff:.6f}), any identical classification result between them is the "
+                "classifier's decision boundary, not identical underlying data."
+            )
+
     all_labels = sorted(set(y_train) | set(y_test))
     rows = []
+    prediction_rows = []
+    subject_label = Path(args.edf_path).stem
+
     for name, X_test in conditions.items():
         y_pred = clf.predict(X_test)
+
+        for true_label, pred_label, w in zip(y_test, y_pred, test_idx):
+            prediction_rows.append({
+                "subject": subject_label,
+                "seed": args.seed,
+                "method": name,
+                "window": int(w),
+                "y_true": true_label,
+                "y_pred": pred_label,
+            })
+
         acc = accuracy_score(y_test, y_pred)
         bal_acc = balanced_accuracy_score(y_test, y_pred)
         macro_f1 = f1_score(y_test, y_pred, labels=all_labels, average="macro", zero_division=0)
         per_class_f1 = f1_score(y_test, y_pred, labels=all_labels, average=None, zero_division=0)
         f1_by_class = dict(zip(all_labels, per_class_f1))
         n1_f1 = f1_by_class.get("N1", float("nan"))
-        rows.append(
-            {
-                "method": name,
-                "accuracy": acc,
-                "balanced_accuracy": bal_acc,
-                "macro_f1": macro_f1,
-                "n1_f1": n1_f1,
-            }
-        )
+        rows.append({
+            "method": name, "accuracy": acc, "balanced_accuracy": bal_acc,
+            "macro_f1": macro_f1, "n1_f1": n1_f1,
+        })
         print(f"\n=== {name} ===")
         print(classification_report(y_test, y_pred, labels=all_labels, zero_division=0))
 
@@ -174,6 +230,17 @@ def main():
     table.to_csv(out_dir / "downstream_classification_results.csv", index=False)
     print(f"\nSaved {out_dir / 'downstream_classification_results.csv'}")
     print(table.to_string(index=False))
+
+    predictions_path = out_dir / "downstream_predictions_combined.csv"
+    new_predictions = pd.DataFrame(prediction_rows)
+    if predictions_path.exists():
+        existing = pd.read_csv(predictions_path)
+        combined_predictions = pd.concat([existing, new_predictions], ignore_index=True)
+    else:
+        combined_predictions = new_predictions
+    combined_predictions.to_csv(predictions_path, index=False)
+    print(f"Appended this run's predictions to {predictions_path} ({len(combined_predictions)} rows total)")
+
     print(
         "\nHeadline metric is n1_f1 (minority class F1), consistent with the prior "
         "QGAN paper's framing. macro_f1 and balanced_accuracy are secondary context, "
