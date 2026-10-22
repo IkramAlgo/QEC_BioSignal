@@ -1,8 +1,17 @@
 """Per logical qubit noise sensitivity ranking.
 
-UPDATED: evaluates only on the held out TEST split, using the same
---max_windows, --test_fraction, and --seed as train_generator.py, so
-this ranking is measured on windows the generator never trained on.
+UPDATED: the ranking is now measured on the TRAINING windows by default
+(--ranking_split train), not on the held out test windows. Previously the
+tier allocation was chosen using the same 20 test windows that the final
+application aware score was then computed on, which lets the allocation
+tune itself to the evaluation data. With the default below, the test
+windows are never touched until the final evaluation in
+run_application_aware_experiment.py.
+
+Use --ranking_split test only to reproduce the old behaviour.
+
+Uses the same --max_windows, --test_fraction, and --seed as
+train_generator.py so the train and test split is identical everywhere.
 
 Usage:
   python scripts/run_sensitivity_ranking.py data/raw/YOUR_FILE.edf --channel "C3" --max_windows 100 --weights_path outputs\\trained_weights.npy
@@ -36,6 +45,13 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--test_fraction", type=float, default=0.2)
     parser.add_argument(
+        "--ranking_split",
+        default="train",
+        choices=["train", "test"],
+        help="Which windows the ranking is measured on. Default train, so the evaluation "
+        "windows are never used to choose the tier allocation.",
+    )
+    parser.add_argument(
         "--weights_path",
         default=None,
         help="Path to trained weights .npy (from train_generator.py). Falls back to random seed-0 weights if omitted.",
@@ -58,8 +74,13 @@ def main():
     train_idx, test_idx = train_test_split_indices(
         len(raw_features), test_fraction=args.test_fraction, seed=args.seed
     )
-    print(f"Evaluating on {len(test_idx)} HELD OUT test windows (held out from training)")
-    features = all_features[test_idx]
+    if args.ranking_split == "train":
+        rank_idx = train_idx
+        print(f"Ranking measured on {len(rank_idx)} TRAINING windows (test windows untouched)")
+    else:
+        rank_idx = test_idx
+        print(f"Ranking measured on {len(rank_idx)} HELD OUT test windows (old behaviour, leaks into evaluation)")
+    features = all_features[rank_idx]
 
     if args.weights_path:
         weights = np.load(args.weights_path)
@@ -104,7 +125,7 @@ def main():
     print(table.to_string(index=False))
     print(
         "\nRank 1 is the most noise sensitive logical qubit, give it the heaviest "
-        "protection. This ranking was measured on held out test windows only."
+        f"protection. This ranking was measured on {args.ranking_split} windows only."
     )
 
 

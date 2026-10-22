@@ -5,9 +5,13 @@ own sensitivity ranking (outputs/sensitivity_ranking.csv, produced by
 running run_sensitivity_ranking.py immediately before this script, same
 subject, same seed).
 
-This replaces the earlier frozen allocation approach, which did not
-generalize across subjects, see outputs/multi_subject_results.csv and
-outputs/per_subject_breakdown.png.
+UPDATED: --allocation_rule chooses how the ranking is turned into tiers.
+  ranking      the original rule, sort by combined_mse, Shor on the top
+               qubit, repetition on the next two, bare on the last. This
+               is the default so nothing changes unless you ask for it.
+  error_aware  src/allocation.py, scores each tier by the kind of error
+               the qubit suffers (repetition only fixes bit flips, see
+               that file for the reasoning).
 
 Usage:
   python scripts/run_sensitivity_ranking.py data/raw/SUBJECT.edf --channel "C3" --max_windows 100 --seed 0 --weights_path outputs/trained_weights.npy
@@ -52,6 +56,12 @@ def main():
     parser.add_argument("--n_repetition", type=int, default=2)
     parser.add_argument("--n_bare", type=int, default=1)
     parser.add_argument(
+        "--allocation_rule",
+        default="ranking",
+        choices=["ranking", "error_aware"],
+        help="How the sensitivity ranking is turned into tiers. Default is the original ranking rule.",
+    )
+    parser.add_argument(
         "--weights_path",
         default=None,
         help="Path to trained weights .npy (from train_generator.py). Falls back to random seed-0 weights if omitted.",
@@ -70,9 +80,18 @@ def main():
             "previous subject's run."
         )
     ranking_df = pd.read_csv(ranking_path)
-    tiers = build_tiers_from_ranking(
-        ranking_df, n_shor=args.n_shor, n_repetition=args.n_repetition, n_bare=args.n_bare
-    )
+
+    if args.allocation_rule == "error_aware":
+        from src.allocation import build_tiers_error_aware
+
+        tiers = build_tiers_error_aware(
+            ranking_df, n_shor=args.n_shor, n_repetition=args.n_repetition, n_bare=args.n_bare
+        )
+    else:
+        tiers = build_tiers_from_ranking(
+            ranking_df, n_shor=args.n_shor, n_repetition=args.n_repetition, n_bare=args.n_bare
+        )
+    print(f"Allocation rule: {args.allocation_rule}")
     print(f"Tier allocation for this subject, built from its own ranking: {tiers}")
 
     print(f"Loading channel '{args.channel}' from {args.edf_path} ...")
