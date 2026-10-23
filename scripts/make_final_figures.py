@@ -1,17 +1,25 @@
-"""Final figures and tables for the noise type study (publication style, version 3).
+"""Final figures and tables for the noise type study (publication style, version 4).
 
-Changes from version 2
-  * Holm correction only over a small PRIMARY family fixed in advance: the four bit/phase codes
-    at p = 0.05 under bit flip and phase flip noise (the settings with 3 seeds). Everything else is
-    exploratory: counts and intervals only, no stars, no filled markers.
-  * Level curves (fig5, S1, S2) and the clean / raw reference lines use seed 0 only, so every point on a curve
-    has the same seed base. Matched seed pairs are still used for the p = 0.05 comparisons (fig1, fig2, tables).
-  * Layout fixes: forest plot labels, legend positions, fig2 annotations, small ratios shown as 0.002x.
+Changes from version 3
+  * Loader fixed: depolarizing rows from sweep_results.csv are appended again, and the phase flip
+    code rows at depolarizing p = 0.02 (3 seeds) are kept.
+  * Phase flip noise is now shown at p = 0.05, 0.10 and 0.20 (regime map, level curves, tables).
+  * Wording: the Holm family of 8 comparisons was chosen after an initial look at the data
+    (post hoc, not preregistered). Everything else is exploratory.
+
+Holm correction runs only over the post hoc PRIMARY family: the four bit/phase codes
+at p = 0.05 under bit flip and phase flip noise (the settings with 3 seeds). Everything else is
+exploratory: counts and intervals only, no stars, no filled markers.
+With 10 subjects the smallest possible two sided Wilcoxon p is 0.002, so the best possible
+Holm adjusted p over 8 tests is 0.0156.
+
+Level curves (fig5, S1, S2) and the clean / raw reference lines use seed 0 only, so every point on a curve
+has the same seed base. Matched seed pairs are still used for the p = 0.05 comparisons (fig1, fig2, tables).
 
 Reads (from the outputs folder)
-  v2_results.csv      depolarizing p = 0.02, plus clean generator and raw feature references
-  sweep_results.csv   depolarizing p = 0.05, 0.10, 0.20
-  sweep_pauli.csv     bit flip p = 0.05, 0.10, 0.20 and phase flip p = 0.05
+  v2_results.csv      depolarizing p = 0.02 (3 seeds) for no_qec, rep03, uniform, rule, plus clean and raw references
+  sweep_results.csv   depolarizing p = 0.05, 0.10, 0.20 (all methods) and phase codes at p = 0.02 (3 seeds)
+  sweep_pauli.csv     bit flip p = 0.05, 0.10, 0.20 and phase flip p = 0.05, 0.10, 0.20
   sweep_diag.csv      depolarizing p = 0.05 with separate Z and X errors (4 subjects)
 
 Writes
@@ -44,7 +52,7 @@ INK = "#1F2937"
 SOFT = "#9CA3AF"
 METHODS = ["no_qec", "rep03", "uniform", "phase03", "phase_uniform", "rule"]
 COMPARED = ["rep03", "uniform", "phase03", "phase_uniform", "rule"]  # narrowed to what is in the data by main()
-# Pre-specified primary family for the Holm correction (3 seeds each, both noise types, the four fixed codes)
+# Post hoc primary family for the Holm correction (chosen after an initial look at the data, not preregistered)
 PRIMARY_SETTINGS = {("bitflip", 0.05), ("phaseflip", 0.05)}
 PRIMARY_METHODS = {"rep03", "uniform", "phase03", "phase_uniform"}
 METHOD_COLOR = {"no_qec": "#6B7280", "rep03": "#D97706", "uniform": "#1D4ED8", "phase03": "#22D3EE",
@@ -67,7 +75,8 @@ LABEL = {
     "rule": "Error aware rule (16 qubits)",
 }
 NOISE_TITLE = {"bitflip": "Bit flip noise", "phaseflip": "Phase flip noise", "depolarizing": "Depolarizing noise"}
-ALL_SETTINGS = [("bitflip", 0.05), ("bitflip", 0.10), ("bitflip", 0.20), ("phaseflip", 0.05),
+ALL_SETTINGS = [("bitflip", 0.05), ("bitflip", 0.10), ("bitflip", 0.20),
+                ("phaseflip", 0.05), ("phaseflip", 0.10), ("phaseflip", 0.20),
                 ("depolarizing", 0.02), ("depolarizing", 0.05), ("depolarizing", 0.10), ("depolarizing", 0.20)]
 COLS = ["subject", "seed", "noise_type", "noise_prob", "method", "mse_vs_ideal", "wasserstein_vs_ideal", "macro_f1"]
 
@@ -101,7 +110,9 @@ def load_all():
         parts.append(d[COLS])
     dep = read("sweep_results.csv")
     if dep is not None:
-        keep = (dep.noise_type == "depolarizing") & (~np.isclose(dep.noise_prob, 0.02)) & dep.method.isin(METHODS)
+        keep = (dep.noise_type == "depolarizing") & dep.method.isin(METHODS)
+        # p = 0.02 baselines come from v2_results.csv; from sweep_results.csv keep only the phase code rows there
+        keep &= ~np.isclose(dep.noise_prob, 0.02) | dep.method.isin(["phase03", "phase_uniform"])
         parts.append(dep[keep][COLS])
     pau = read("sweep_pauli.csv")
     if pau is not None:
@@ -109,6 +120,7 @@ def load_all():
         parts.append(pau[keep][COLS])
     data = pd.concat(parts, ignore_index=True)
     data["noise_prob"] = data["noise_prob"].astype(float).round(4)
+    data = data.drop_duplicates(subset=["subject", "seed", "noise_type", "noise_prob", "method"], keep="last")
     return data, clean, raw
 
 
@@ -187,7 +199,7 @@ def holm_adjust(pvals):
 
 
 def adjusted_pvalues(data):
-    """Holm adjusted p values over the PRIMARY family only.
+    """Holm adjusted p values over the post hoc PRIMARY family only.
     Returns {(noise_type, p, method): (adjusted_p_error, adjusted_p_f1)}; other comparisons are absent."""
     keys, pe, pf = [], [], []
     for nt, p in available(data):
@@ -295,7 +307,7 @@ def fig_regime_map(data, adj):
             L[i, j] = lr
             txt[i][j] = (f"{fmt_ratio(2 ** lr)}\n{int((b < a).sum())}/{len(a)}"
                           f"{stars(adj.get((nt, p, m), (np.nan, np.nan))[0])}")
-    fig, ax = plt.subplots(figsize=(7.2, 1.0 + 0.62 * len(methods)))
+    fig, ax = plt.subplots(figsize=(9.0, 1.0 + 0.62 * len(methods)))
     cmap = plt.get_cmap("RdBu_r").copy()
     cmap.set_bad("#F3F4F6")
     im = ax.imshow(np.ma.masked_invalid(L), cmap=cmap, vmin=-4, vmax=4, aspect="auto")
@@ -331,7 +343,7 @@ def fig_regime_map(data, adj):
     cb.set_label("Error vs no protection\n(blue lower, red higher)", fontsize=8)
     cb.outline.set_visible(False)
     fig.text(0.5, -0.09, "Cell text: geometric mean error ratio, then subjects with lower error out of 10. "
-             "* Holm adjusted p < 0.05, only for the pre-specified primary family\n"
+             "* Holm adjusted p < 0.05, only for the primary family, which was chosen after an initial look at the data\n"
              "(the four fixed codes at p = 0.05 under bit flip and phase flip noise); all other cells are exploratory.\n"
              "Colors saturate beyond 1/16 and 16. Per subject values are means over matched seeds (seed counts under each column).",
              ha="center", fontsize=7.0, color="#4B5563", style="italic")
@@ -416,7 +428,7 @@ def fig_staging_forest(data, adj):
                 fontsize=8.2, fontweight="bold", color=col)
     ax.set_xlabel("Change in sleep staging macro F1 versus no protection\n"
                   "mean and 95% subject bootstrap interval; descriptive only\n"
-                  "filled marker: Holm adjusted p < 0.05 (primary family only)", linespacing=1.4)
+                  "filled marker: Holm adjusted p < 0.05 (post hoc primary family only)", linespacing=1.4)
     ax.tick_params(axis="y", length=0)
     ax.spines["left"].set_visible(False)
     ax.grid(axis="x", color="#E5E7EB", lw=0.6)
@@ -471,8 +483,8 @@ def fig_mechanism():
 # ----------------------------------------------------------------------------- fig 5
 def fig_relative_sweep(data):
     """Level curves use seed 0 only so every point has the same seed base."""
-    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.3), sharey=True)
-    for k, (ax, nt) in enumerate(zip(axes, ["bitflip", "depolarizing"])):
+    fig, axes = plt.subplots(1, 3, figsize=(9.6, 3.3), sharey=True)
+    for k, (ax, nt) in enumerate(zip(axes, ["bitflip", "phaseflip", "depolarizing"])):
         ps = sorted(data[data.noise_type == nt].noise_prob.unique())
         ax.axhspan(1e-4, 1, color="#DBEAFE", alpha=0.55, zorder=0)
         ax.axhspan(1, 1e4, color="#FEE2E2", alpha=0.45, zorder=0)
@@ -501,7 +513,7 @@ def fig_relative_sweep(data):
                             mew=0.8, elinewidth=1.6, capsize=2.5, zorder=3, label=LABEL[m])
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_ylim(0.002, 300)
+        ax.set_ylim(0.001, 300)
         ax.set_xticks(ps)
         ax.set_xticklabels([f"{p:g}" for p in ps])
         ax.minorticks_off()
@@ -510,10 +522,15 @@ def fig_relative_sweep(data):
         ax.text(0.03, 0.05, "protection helps", transform=ax.transAxes, fontsize=7.5, color="#1E40AF", style="italic")
         ax.text(0.03, 0.93, "protection hurts", transform=ax.transAxes, fontsize=7.5, color="#B91C1C",
                 style="italic", va="top")
-        panel(ax, "ab"[k], dx=0.0)
+        panel(ax, "abc"[k], dx=0.0)
     axes[0].set_ylabel("Error relative to no protection")
-    h, l = axes[0].get_legend_handles_labels()
-    fig.legend(h, l, loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(0.5, -0.17), fontsize=7.4)
+    handles, labels = [], []
+    for ax in axes:
+        for h, l in zip(*ax.get_legend_handles_labels()):
+            if l not in labels:
+                handles.append(h)
+                labels.append(l)
+    fig.legend(handles, labels, loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(0.5, -0.17), fontsize=7.4)
     fig.text(0.5, -0.24, "Seed 0 only at every point. Bands: 95% subject bootstrap interval of the geometric mean ratio.",
              ha="center", fontsize=7.0, color="#4B5563", style="italic")
     fig.tight_layout()
@@ -588,28 +605,38 @@ def _level_panel(ax, data, nt, metric):
 
 def fig_supplementary(data0, clean, raw):
     """data0 is seed 0 only."""
-    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.4))
-    for ax, nt in zip(axes, ["bitflip", "depolarizing"]):
+    fig, axes = plt.subplots(1, 3, figsize=(9.6, 3.4))
+    for ax, nt in zip(axes, ["bitflip", "phaseflip", "depolarizing"]):
         _level_panel(ax, data0, nt, "mse_vs_ideal")
         ax.set_yscale("log")
     axes[0].set_ylabel("Mean squared error vs clean output")
-    h, l = axes[0].get_legend_handles_labels()
-    fig.legend(h, l, loc="lower center", ncol=2, frameon=False, bbox_to_anchor=(0.5, -0.24), fontsize=7.4)
+    handles, labels = [], []
+    for ax in axes:
+        for h, l in zip(*ax.get_legend_handles_labels()):
+            if l not in labels:
+                handles.append(h)
+                labels.append(l)
+    fig.legend(handles, labels, loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(0.5, -0.24), fontsize=7.4)
     fig.text(0.5, -0.33, "Seed 0 only. Error bars: standard error over subjects.", ha="center", fontsize=7.0,
              color="#4B5563", style="italic")
     fig.tight_layout()
     save(fig, "figS1_absolute_error")
 
-    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.4), sharey=True)
-    for ax, nt in zip(axes, ["bitflip", "depolarizing"]):
+    fig, axes = plt.subplots(1, 3, figsize=(9.6, 3.4), sharey=True)
+    for ax, nt in zip(axes, ["bitflip", "phaseflip", "depolarizing"]):
         _level_panel(ax, data0, nt, "macro_f1")
         if clean is not None:
             ax.axhline(clean.mean(), color=INK, ls="--", lw=1.0, label="Clean generator output")
         if raw is not None:
             ax.axhline(raw.mean(), color=SOFT, ls=":", lw=1.3, label="Raw features, no circuit")
     axes[0].set_ylabel("Sleep staging macro F1")
-    h, l = axes[0].get_legend_handles_labels()
-    fig.legend(h, l, loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(0.5, -0.26), fontsize=7.2)
+    handles, labels = [], []
+    for ax in axes:
+        for h, l in zip(*ax.get_legend_handles_labels()):
+            if l not in labels:
+                handles.append(h)
+                labels.append(l)
+    fig.legend(handles, labels, loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(0.5, -0.26), fontsize=7.2)
     fig.text(0.5, -0.36, "Seed 0 only. Error bars: standard error over subjects. Descriptive.", ha="center",
              fontsize=7.0, color="#4B5563", style="italic")
     fig.tight_layout()
