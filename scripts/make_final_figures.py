@@ -7,14 +7,15 @@ Changes from version 3
   * Wording: the Holm family of 8 comparisons was chosen after an initial look at the data
     (post hoc, not preregistered). Everything else is exploratory.
 
-Holm correction runs only over the post hoc PRIMARY family: the four bit/phase codes
-at p = 0.05 under bit flip and phase flip noise (the settings with 3 seeds). Everything else is
-exploratory: counts and intervals only, no stars, no filled markers.
+The selected post hoc comparison family contains the four fixed bit/phase-code
+configurations at p = 0.05 under bit-flip and phase-flip noise (eight comparisons total).
+The family was selected after initial inspection and was not preregistered. All other
+comparisons are exploratory and are reported using effect sizes, counts, and intervals only.
 With 10 subjects the smallest possible two sided Wilcoxon p is 0.002, so the best possible
 Holm adjusted p over 8 tests is 0.0156.
 
 Level curves (fig5, S1, S2) and the clean / raw reference lines use seed 0 only, so every point on a curve
-has the same seed base. Matched seed pairs are still used for the p = 0.05 comparisons (fig1, fig2, tables).
+has the same seed base. For the p = 0.05 fixed-code family, matched seeds are averaged within each subject before paired inference; subject-level summaries are shown in the figures and tables.
 
 Reads (from the outputs folder)
   v2_results.csv      depolarizing p = 0.02 (3 seeds) for no_qec, rep03, uniform, rule, plus clean and raw references
@@ -52,27 +53,27 @@ INK = "#1F2937"
 SOFT = "#9CA3AF"
 METHODS = ["no_qec", "rep03", "uniform", "phase03", "phase_uniform", "rule"]
 COMPARED = ["rep03", "uniform", "phase03", "phase_uniform", "rule"]  # narrowed to what is in the data by main()
-# Post hoc primary family for the Holm correction (chosen after an initial look at the data, not preregistered)
-PRIMARY_SETTINGS = {("bitflip", 0.05), ("phaseflip", 0.05)}
-PRIMARY_METHODS = {"rep03", "uniform", "phase03", "phase_uniform"}
+# Selected post hoc comparison family for Holm correction; chosen after initial inspection, not preregistered.
+POSTHOC_SETTINGS = {("bitflip", 0.05), ("phaseflip", 0.05)}
+POSTHOC_METHODS = {"rep03", "uniform", "phase03", "phase_uniform"}
 METHOD_COLOR = {"no_qec": "#6B7280", "rep03": "#D97706", "uniform": "#1D4ED8", "phase03": "#22D3EE",
                 "phase_uniform": "#0E7490", "rule": "#BE185D"}
 NOISE_COLOR = {"bitflip": "#0F766E", "phaseflip": "#7C3AED", "depolarizing": "#C2410C"}
 Z_COLOR, X_COLOR = "#0F766E", "#C2410C"
 QUBITS = {"no_qec": 4, "rep03": 8, "uniform": 12, "phase03": 8, "phase_uniform": 12, "rule": 16}
 SHORT = {"no_qec": "None", "rep03": "Bit code, qubits 0,3", "uniform": "Bit code, all 4",
-         "phase03": "Phase code, qubits 0,3", "phase_uniform": "Phase code, all 4", "rule": "Error aware rule"}
+         "phase03": "Phase code, qubits 0,3", "phase_uniform": "Phase code, all 4", "rule": "Sensitivity-based allocation"}
 FOREST = {"rep03": "Bit, qubits 0,3", "uniform": "Bit, all 4", "phase03": "Phase, qubits 0,3",
-          "phase_uniform": "Phase, all 4", "rule": "Rule"}
+          "phase_uniform": "Phase, all 4", "rule": "Sens. allocation"}
 TICK = {"no_qec": "None", "rep03": "Bit\n0,3", "uniform": "Bit\nall", "phase03": "Phase\n0,3",
-        "phase_uniform": "Phase\nall", "rule": "Rule"}
+        "phase_uniform": "Phase\nall", "rule": "Sens.\nallocation"}
 LABEL = {
     "no_qec": "No protection (4 qubits)",
     "rep03": "Bit flip code on qubits 0 and 3 (8 qubits)",
     "uniform": "Bit flip code on all qubits (12 qubits)",
     "phase03": "Phase flip code on qubits 0 and 3 (8 qubits)",
     "phase_uniform": "Phase flip code on all qubits (12 qubits)",
-    "rule": "Error aware rule (16 qubits)",
+    "rule": "Sensitivity-based allocation (16 qubits)",
 }
 NOISE_TITLE = {"bitflip": "Bit flip noise", "phaseflip": "Phase flip noise", "depolarizing": "Depolarizing noise"}
 ALL_SETTINGS = [("bitflip", 0.05), ("bitflip", 0.10), ("bitflip", 0.20),
@@ -118,6 +119,8 @@ def load_all():
     if pau is not None:
         keep = pau.noise_type.isin(["bitflip", "phaseflip"]) & pau.method.isin(METHODS)
         parts.append(pau[keep][COLS])
+    if not parts:
+        raise FileNotFoundError("No result rows were loaded. Check outputs/v2_results.csv, sweep_results.csv, and sweep_pauli.csv.")
     data = pd.concat(parts, ignore_index=True)
     data["noise_prob"] = data["noise_prob"].astype(float).round(4)
     data = data.drop_duplicates(subset=["subject", "seed", "noise_type", "noise_prob", "method"], keep="last")
@@ -188,7 +191,9 @@ def stars(p):
 
 
 def holm_adjust(pvals):
-    p = np.nan_to_num(np.asarray(pvals, dtype=float), nan=1.0)
+    p = np.asarray(pvals, dtype=float)
+    if p.ndim != 1 or p.size == 0 or not np.isfinite(p).all():
+        raise ValueError("Holm correction requires a non-empty, finite p-value family.")
     order = np.argsort(p)
     adj = np.empty_like(p)
     running = 0.0
@@ -199,23 +204,45 @@ def holm_adjust(pvals):
 
 
 def adjusted_pvalues(data):
-    """Holm adjusted p values over the post hoc PRIMARY family only.
-    Returns {(noise_type, p, method): (adjusted_p_error, adjusted_p_f1)}; other comparisons are absent."""
+    """Holm-adjusted p-values for the selected post hoc family of eight comparisons only.
+
+    The expected design is 10 subjects with 3 matched seeds per subject for each
+    fixed-code comparison. Fail loudly if the source data do not support that family.
+    """
+    expected = {
+        (nt, p, m)
+        for nt, p in POSTHOC_SETTINGS
+        for m in POSTHOC_METHODS
+    }
     keys, pe, pf = [], [], []
-    for nt, p in available(data):
-        if (nt, p) not in PRIMARY_SETTINGS:
-            continue
-        for m in COMPARED:
-            if m not in PRIMARY_METHODS:
-                continue
-            e, f = paired(data, nt, p, m, "mse_vs_ideal"), paired(data, nt, p, m, "macro_f1")
-            if e is None or f is None:
-                continue
-            keys.append((nt, p, m))
-            pe.append(wilcoxon_p(*e))
-            pf.append(wilcoxon_p(f[1] - f[0]))
+
+    for nt, p, m in sorted(expected):
+        for metric in ("mse_vs_ideal", "macro_f1"):
+            t = table(data, nt, p, metric)
+            if "no_qec" not in t.columns or m not in t.columns:
+                raise ValueError(f"Missing {metric} data for selected post hoc comparison {(nt, p, m)}.")
+            both = t[["no_qec", m]].dropna()
+            per_subject_seed_counts = both.groupby(level="subject").size()
+            if len(per_subject_seed_counts) != 10 or not per_subject_seed_counts.eq(3).all():
+                raise ValueError(
+                    f"Expected 10 subjects with 3 matched seeds each for {(nt, p, m)} "
+                    f"({metric}); observed per-subject counts: {per_subject_seed_counts.to_dict()}"
+                )
+
+        e = paired(data, nt, p, m, "mse_vs_ideal")
+        f = paired(data, nt, p, m, "macro_f1")
+        if e is None or f is None or len(e[0]) != 10 or len(f[0]) != 10:
+            raise ValueError(f"Incomplete 10-subject paired data for {(nt, p, m)}.")
+        keys.append((nt, p, m))
+        pe.append(wilcoxon_p(*e))
+        pf.append(wilcoxon_p(f[1] - f[0]))
+
+    if set(keys) != expected or len(keys) != 8:
+        missing = sorted(expected - set(keys))
+        raise ValueError(f"The selected post hoc family must contain exactly 8 comparisons; missing: {missing}")
+
     he, hf = holm_adjust(pe), holm_adjust(pf)
-    print(f"  Holm family: {len(keys)} primary comparisons")
+    print(f"  Selected post hoc family: {len(keys)} comparisons (8 expected)")
     return {k: (a, b) for k, a, b in zip(keys, he, hf)}
 
 
@@ -262,7 +289,7 @@ def fig_schematic():
     ax.set_ylim(0, 52.8)
     ax.axis("off")
     boxes = ["EEG night\n10 s windows\n10 subjects", "8 spectral\nfeatures\n(z scored)",
-             "4 qubit\nquantum\ngenerator", "Pauli noise\n+ protection\ntier", "Frozen\nclassifier\n(5 stages)",
+             "4-qubit variational\nfeature reconstruction\ncircuit", "Pauli noise\n+ protection\ntier", "Frozen\nclassifier\n(5 stages)",
              "Outputs\nMSE vs clean\nmacro F1"]
     w, gap, x, y, h = 13.2, 3.7, 1.15, 38.5, 10.5
     for i, text in enumerate(boxes):
@@ -281,7 +308,7 @@ def fig_schematic():
     layouts = [("no_qec", ["bare"] * 4, "No protection"),
                ("rep03", ["rep", "bare", "bare", "rep"], "Bit flip code on qubits 0 and 3"),
                ("uniform", ["rep"] * 4, "Bit flip code on all qubits"),
-               ("rule", ["rep", "rep", "shor", "bare"], "Error aware rule (example)")]
+               ("rule", ["rep", "rep", "shor", "bare"], "Sensitivity-based allocation\n(illustrative assignment)")]
     for (m, tiers, name), x0 in zip(layouts, [2.0, 26.0, 50.0, 74.0]):
         _layout(ax, x0, 15.5, tiers, METHOD_COLOR[m])
         ax.text(x0 + 8.5, 9.0, f"{name}\n{QUBITS[m]} physical qubits", ha="center", va="center",
@@ -342,10 +369,10 @@ def fig_regime_map(data, adj):
     cb.set_ticklabels(["1/16", "1/4", "1", "4", "16"])
     cb.set_label("Error vs no protection\n(blue lower, red higher)", fontsize=8)
     cb.outline.set_visible(False)
-    fig.text(0.5, -0.09, "Cell text: geometric mean error ratio, then subjects with lower error out of 10. "
-             "* Holm adjusted p < 0.05, only for the primary family, which was chosen after an initial look at the data\n"
-             "(the four fixed codes at p = 0.05 under bit flip and phase flip noise); all other cells are exploratory.\n"
-             "Colors saturate beyond 1/16 and 16. Per subject values are means over matched seeds (seed counts under each column).",
+    fig.text(0.5, -0.09, "Cell text: geometric-mean error ratio, then subjects with lower error out of 10.\n"
+             "* denotes Holm-adjusted p < 0.05 in the selected post hoc family of eight fixed-code comparisons\n"
+             "(four codes per channel at p = 0.05 under bit-flip and phase-flip noise); selected after initial inspection, not preregistered.\n"
+             "All other cells are exploratory. Colors saturate beyond 1/16 and 16; subject values average matched seeds.",
              ha="center", fontsize=7.0, color="#4B5563", style="italic")
     save(fig, "fig1_regime_map")
 
@@ -370,9 +397,9 @@ def fig_paired_subjects(data, p=0.05):
         best = order[1 + int(np.argmin(gm[1:]))]
         a, b = t["no_qec"].values, t[best].values
         lower, higher = int((b < a).sum()), int((b > a).sum())
-        verdict = (f"lower error in {lower}/{len(a)}" if lower >= higher else f"higher error in {higher}/{len(a)}")
-        ax.set_xlabel(f"{'best code' if lower >= higher else 'least harmful code'}: {SHORT[best].lower()}\n{verdict}, p = {wilcoxon_p(a, b):.3f}",
-                      fontsize=6.9, color=NOISE_COLOR[nt], labelpad=14)
+        verdict = f"lower error in {lower}/{len(a)}"
+        ax.set_xlabel(f"Lowest geometric-mean ratio: {SHORT[best].lower()}\n{verdict}",
+                      fontsize=6.9, color=NOISE_COLOR[nt], labelpad=10)
         ax.set_yscale("log")
         ax.set_xticks(range(n))
         ax.set_xticklabels([TICK[m] for m in order], fontsize=7)
@@ -426,14 +453,15 @@ def fig_staging_forest(data, adj):
     for yc, text, col in centers:
         ax.text(-0.34, yc, text, transform=ax.get_yaxis_transform(), ha="right", va="center",
                 fontsize=8.2, fontweight="bold", color=col)
-    ax.set_xlabel("Change in sleep staging macro F1 versus no protection\n"
-                  "mean and 95% subject bootstrap interval; descriptive only\n"
-                  "filled marker: Holm adjusted p < 0.05 (post hoc primary family only)", linespacing=1.4)
+    ax.set_xlabel("Change in sleep-stage macro-F1 vs no protection\n"
+                  "Point: mean; interval: 95% subject-bootstrap interval\n"
+                  "Filled: Holm-adjusted p < 0.05 in the selected post hoc family",
+                  fontsize=7.0, linespacing=1.25, labelpad=8)
     ax.tick_params(axis="y", length=0)
     ax.spines["left"].set_visible(False)
     ax.grid(axis="x", color="#E5E7EB", lw=0.6)
     ax.set_axisbelow(True)
-    fig.subplots_adjust(left=0.40)
+    fig.subplots_adjust(left=0.40, bottom=0.20)
     save(fig, "fig3_staging_forest")
 
 
@@ -626,7 +654,7 @@ def fig_supplementary(data0, clean, raw):
     for ax, nt in zip(axes, ["bitflip", "phaseflip", "depolarizing"]):
         _level_panel(ax, data0, nt, "macro_f1")
         if clean is not None:
-            ax.axhline(clean.mean(), color=INK, ls="--", lw=1.0, label="Clean generator output")
+            ax.axhline(clean.mean(), color=INK, ls="--", lw=1.0, label="Clean circuit output")
         if raw is not None:
             ax.axhline(raw.mean(), color=SOFT, ls=":", lw=1.3, label="Raw features, no circuit")
     axes[0].set_ylabel("Sleep staging macro F1")
@@ -670,16 +698,28 @@ def summary_and_tests(data, data0, adj):
             a, b = e
             diff = f[1] - f[0]
             sp = matched_pairs(data, nt, p, m, "mse_vs_ideal")
+            selected_posthoc = (nt, p) in POSTHOC_SETTINGS and m in POSTHOC_METHODS
+            adjusted = adj.get((nt, p, m), (np.nan, np.nan))
+            log_r = log_ratio(a, b)
+            ratio_ci = np.exp(boot_ci(log_r))
+            f1_ci = boot_ci(diff)
             out.append({"noise_type": nt, "noise_prob": p, "method": m, "n_subjects": len(a),
                         "n_seeds_matched": sp[2],
-                        "primary_family": (nt, p) in PRIMARY_SETTINGS and m in PRIMARY_METHODS,
+                        "n_matched_subject_seed_pairs": len(sp[0]),
+                        "selected_posthoc_family": selected_posthoc,
                         "lower_error_in_subject_seed_pairs": f"{int((sp[1] < sp[0]).sum())}/{len(sp[0])}",
-                        "error_ratio_vs_no_protection": float(np.exp(log_ratio(a, b).mean())),
-                        "lower_error_in": f"{int((b < a).sum())}/{len(a)}", "wilcoxon_p_error": wilcoxon_p(a, b),
+                        "error_ratio_vs_no_protection": float(np.exp(log_r.mean())),
+                        "error_ratio_ci_low": float(ratio_ci[0]),
+                        "error_ratio_ci_high": float(ratio_ci[1]),
+                        "lower_error_in": f"{int((b < a).sum())}/{len(a)}",
+                        "wilcoxon_p_error_selected_family": wilcoxon_p(a, b) if selected_posthoc else np.nan,
                         "f1_diff_vs_no_protection": float(diff.mean()),
-                        "higher_f1_in": f"{int((diff > 0).sum())}/{len(diff)}", "wilcoxon_p_f1": wilcoxon_p(diff),
-                        "holm_p_error_primary": adj.get((nt, p, m), (np.nan, np.nan))[0],
-                        "holm_p_f1_primary": adj.get((nt, p, m), (np.nan, np.nan))[1]})
+                        "f1_diff_ci_low": float(f1_ci[0]),
+                        "f1_diff_ci_high": float(f1_ci[1]),
+                        "higher_f1_in": f"{int((diff > 0).sum())}/{len(diff)}",
+                        "wilcoxon_p_f1_selected_family": wilcoxon_p(diff) if selected_posthoc else np.nan,
+                        "holm_p_error_selected_family": adjusted[0],
+                        "holm_p_f1_selected_family": adjusted[1]})
     tests = pd.DataFrame(out)
     tests.to_csv(OUT / "final_tables.csv", index=False)
     print("\nPaired comparison against no protection (ratio below 1 means lower error):")
