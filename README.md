@@ -1,31 +1,56 @@
 # Matching Quantum Error Correction to Noise Type for a Quantum EEG Feature Circuit
 
-**A subject-level simulation study with downstream sleep staging**  
-Repository: [IkramAlgo/QEC_BioSignal](https://github.com/IkramAlgo/QEC_BioSignal)  
-**Status:** Research code and analysis outputs for a manuscript in preparation. Results are simulated; no real quantum-hardware experiment is claimed.
+**A subject-level simulation study with downstream sleep staging**
 
-## Project overview
+[![Repository](https://img.shields.io/badge/repository-GitHub-181717?logo=github)](https://github.com/IkramAlgo/QEC_BioSignal)
 
-This project studies when small quantum error-correcting codes reduce or increase reconstruction error in a variational quantum circuit applied to EEG spectral features. The circuit is trained with a **reconstruction objective**: it reconstructs its input features. It is not an adversarially trained generator or a generative sampler.
+This repository contains research code, analysis outputs, and publication figures for a study of quantum error-correction strategies applied to a variational quantum circuit operating on EEG spectral features.
 
-The main comparison is between no protection, bit-flip repetition protection, phase-flip repetition protection, and a sensitivity-based allocation rule that combines repetition and Shor-code blocks. The study asks how the protection scheme interacts with the noise channel and whether any reconstruction-error changes carry through to a downstream sleep-stage classifier.
+> **Study status:** Manuscript in preparation. All results reported here are from simulation. No experiment on real quantum hardware is claimed.
 
-The contribution is deliberately narrow: a subject-level comparison for an EEG feature circuit, an analysis of matched and mismatched repetition-code behavior, and a negative result for the particular sensitivity-based allocation rule tested. This project does **not** claim to introduce noise-tailored or application-aware QEC in general.
+## Overview
 
-## Current study configuration
+The study examines how small quantum error-correcting codes affect the reconstruction fidelity of a variational quantum feature circuit under different simulated storage-noise channels. The circuit is trained with a **reconstruction objective**: it learns to reconstruct its input features. It is not an adversarially trained generator or a generative sampler.
 
-- **Dataset:** ANPHY-Sleep, a public high-density sleep EEG dataset originally containing 29 healthy adults.
-- **Subjects used:** 10 subjects: `EPCTL01`–`EPCTL07`, `EPCTL09`, `EPCTL11`, and `EPCTL12`. Two files from the original list were missing or damaged.
-- **Signal:** EEG channel C3; 10-second windows sampled at one window per 30-second epoch, with an epoch buffer between training and test data. There are approximately 60 test windows per subject.
-- **Features:** 8 spectral features per window. Scaling uses training-set statistics only (z-score, clipped at 2.5).
-- **Circuit:** 4-qubit variational circuit trained separately per subject and seed for 60 epochs. Held-out reconstruction \(R^2\) across the repaired runs was 0.51–0.81.
-- **Noise:** one independent Pauli fault per physical qubit, applied once to the stored circuit output after encoding, with \(p\in\{0.02,0.05,0.10,0.20\}\). Bit-flip noise applies \(X\), phase-flip noise applies \(Z\), and the depolarizing model selects \(X\), \(Y\), or \(Z\) with equal probability.
-- **Idealized operations:** encoding, decoding, and majority vote are noiseless. The results therefore isolate this storage-noise model; they do not estimate the performance of an end-to-end hardware implementation with noisy gates and measurements.
-- **Readout and metrics:** expectation values of \(X\) and \(Z\) on each block's primary qubit, averaged over 50 noise trajectories. Reconstruction is evaluated against the clean circuit output using MSE and Wasserstein distance. A classifier trained on clean outputs is then frozen and evaluated using macro-F1.
+The experiments compare an unprotected circuit with bit-flip repetition protection, phase-flip repetition protection, and one sensitivity-based allocation rule combining repetition-code and Shor-code blocks. The analysis considers both reconstruction error and the behavior of a downstream sleep-stage classifier evaluated on protected circuit outputs.
+
+The contribution is intentionally scoped to a subject-level simulation study. It examines matched and mismatched repetition-code behavior for an EEG feature circuit and reports a negative result for the particular sensitivity-based allocation rule tested. It does **not** claim to introduce noise-tailored or application-aware quantum error correction in general.
+
+## Study design
+
+| Component | Configuration |
+|---|---|
+| Dataset | ANPHY-Sleep, a public high-density sleep EEG dataset originally comprising 29 healthy adults |
+| Subjects analyzed | 10: `EPCTL01`–`EPCTL07`, `EPCTL09`, `EPCTL11`, and `EPCTL12` |
+| Data availability | Two expected recordings in the working subject list were unavailable or damaged; the analysis uses the 10 subjects listed above |
+| Signal | EEG channel C3 |
+| Windowing | 10-second windows, one window per 30-second epoch, with an epoch buffer between training and test data |
+| Test set | Approximately 60 test windows per subject |
+| Features | Eight spectral features per window |
+| Scaling | Training-set statistics only; z-score scaling clipped at 2.5 |
+| Quantum circuit | Four-qubit variational feature circuit, trained separately for each subject and seed for 60 epochs |
+| Held-out reconstruction | Reported $R^2$ across the repaired runs: 0.51–0.81 |
+| Noise probabilities | $p \in \{0.02, 0.05, 0.10, 0.20\}$ |
+| Noise location | Storage stage, after encoding and before decoding/recovery |
+| Noise trajectories | 50 trajectories per evaluated condition |
+
+### Noise model and idealizations
+
+Each physical qubit is independently subject to a stochastic Pauli error during the storage stage, with error probability $p$. The bit-flip channel applies $X$, the phase-flip channel applies $Z$, and the depolarizing channel selects $X$, $Y$, or $Z$ with equal probability when an error occurs.
+
+Encoding, decoding, and majority-vote recovery are treated as noiseless. The simulations therefore isolate the specified storage-noise model; they do not estimate end-to-end hardware performance with noisy gates, syndrome extraction, ancilla preparation, or measurements.
+
+### Readout and evaluation
+
+The circuit readout uses expectation values of $X$ and $Z$ on each block's primary qubit, averaged over 50 noise trajectories. Reconstruction is evaluated against the clean circuit output using mean squared error (MSE) and Wasserstein distance.
+
+For downstream evaluation, a sleep-stage classifier is trained on clean circuit outputs and then frozen. Its performance on the protected outputs is reported using macro-F1. Reconstruction fidelity and downstream classification performance are treated as distinct outcomes: lower reconstruction error does not necessarily imply better sleep-stage classification.
 
 ## Protection schemes
 
-| Method name in result files | Description | Total physical qubits |
+The method identifiers below match the result files.
+
+| Identifier | Protection scheme | Physical qubits |
 |---|---|---:|
 | `no_qec` | No error-correcting protection | 4 |
 | `rep03` | Bit-flip repetition code on feature blocks 0 and 3 | 8 |
@@ -34,13 +59,15 @@ The contribution is deliberately narrow: a subject-level comparison for an EEG f
 | `phase_uniform` | Phase-flip repetition code on all four feature blocks | 12 |
 | `rule` | Sensitivity-based allocation: one Shor block, two repetition-code blocks, and one bare block | 16 |
 
-The sensitivity ranking is computed from training windows only. The allocation rule is evaluated as a particular design choice—not as a general solution to application-aware QEC.
+The sensitivity ranking is computed using training windows only. The `rule` configuration is evaluated as one specific allocation design, not as a general solution to application-aware quantum error correction.
 
-## Main results at \(p=0.05\)
+## Results
 
-The following results use three seeds per subject for the bit-flip and phase-flip primary comparisons. Error ratio is the geometric mean across subjects of protected MSE divided by unprotected MSE; values below 1 mean lower reconstruction error. Large ratios in the mismatched cases start from a very small unprotected baseline, so absolute MSE should always be reported alongside ratios.
+### Primary bit-flip and phase-flip comparisons at $p=0.05$
 
-| Noise | Method | Error ratio vs. no QEC | Subjects with lower error | Macro-F1 difference | Holm-adjusted F1 p-value |
+The primary bit-flip and phase-flip comparisons use three seeds per subject. The error ratio is the geometric mean across subjects of protected MSE divided by unprotected MSE; values below 1 indicate lower reconstruction error. Because some unprotected baselines are very small, ratios—particularly in mismatched cases—should be interpreted alongside absolute MSE and Wasserstein values.
+
+| Noise channel | Method | MSE ratio vs. no QEC | Subjects with lower error | Macro-F1 difference | Holm-adjusted F1 $p$-value |
 |---|---|---:|---:|---:|---:|
 | Bit flip | `rep03` | 0.1164 | 10/10 (30/30 subject–seed pairs) | +0.0179 | 0.1172 |
 | Bit flip | `uniform` | 0.0619 | 10/10 (30/30) | +0.0324 | **0.0312** |
@@ -51,11 +78,13 @@ The following results use three seeds per subject for the bit-flip and phase-fli
 | Phase flip | `phase03` | 0.6425 | 10/10 (27/30 pairs) | +0.0083 | 0.6953 |
 | Phase flip | `phase_uniform` | 0.0021 | 10/10 (30/30) | +0.0122 | 0.1367 |
 
-For the primary family of eight error comparisons, each exact Wilcoxon test has \(p=0.002\) and the Holm-adjusted error p-value is 0.0156. The eight-comparison family was defined after an initial look at the results and was **not preregistered**; this must be disclosed. The F1 results are separate: two of eight primary F1 comparisons remain significant after Holm correction, and these effects are small and in opposite directions.
+For the eight primary reconstruction-error comparisons, each exact subject-level Wilcoxon signed-rank test yielded $p=0.002$; the Holm-adjusted error $p$-value was 0.0156. The eight-comparison family was selected after an initial inspection of the results and was **not preregistered**. This post hoc selection must be considered when interpreting the inferential results.
 
-## Depolarizing-noise results
+The downstream F1 comparisons were corrected separately. Two of the eight primary F1 comparisons remain significant after Holm correction: the full bit-flip repetition configuration has a positive difference, while the full phase-flip repetition configuration has a negative difference. These effects are modest and point in opposite directions; they do not support a general claim that improved reconstruction produces improved classification.
 
-The phase-flip configurations were subsequently evaluated under depolarizing noise. The ratios below are from the merged final comparison table. Ratios above 1 indicate higher MSE than no protection. The \(p=0.02\) records combine the original study outputs with the sweep records; do not interpret the one-file `--summary` output as the complete merged analysis.
+### Depolarizing-noise comparisons
+
+The following ratios are taken from the merged final comparison table. Values above 1 indicate higher MSE than the unprotected circuit.
 
 | Noise probability | `rep03` | `uniform` | `phase03` | `phase_uniform` | `rule` |
 |---:|---:|---:|---:|---:|---:|
@@ -64,83 +93,113 @@ The phase-flip configurations were subsequently evaluated under depolarizing noi
 | 0.10 | 2.1362 | 5.2944 | 2.1091 | 5.3882 | 1.5790 |
 | 0.20 | 1.9633 | 4.7730 | 1.9379 | 4.6734 | 1.6855 |
 
-These results do not show an overall reconstruction-error improvement from either tested repetition-code orientation or from the tested allocation rule under the simulated depolarizing channel. The noise-level sweeps mostly use one seed and should be described as exploratory; the \(p=0.02\) code comparisons use three seeds, while the allocation rule has only one seed.
+These results show no overall reconstruction-error improvement over no protection for the tested schemes under the simulated depolarizing channel. Most noise-level sweep results use one seed and are exploratory. At $p=0.02$, the code comparisons use three seeds, while the allocation-rule result uses one seed.
 
-The separate file `outputs/sweep_phase_depolarizing_p005.csv` contains 20 phase-code rows for \(p=0.05\). A key check found that all 20 subject/seed/method keys already exist in `outputs/sweep_results.csv`, and macro-F1 matched exactly. The MSE and Wasserstein values have **not yet been directly compared in the same check**. Keep the separate file until those metric comparisons are complete; avoid appending duplicate rows.
+### Sensitivity-based allocation
 
-## Sensitivity-based allocation result
+The tested allocation rule did not show a reliable benefit over no protection under bit-flip noise: its MSE ratio was 1.2709, with lower error in 5 of 10 subjects. This comparison is exploratory. Under depolarizing noise, its MSE ratio was above 1 at every tested probability. The rule also uses 16 physical qubits, compared with 12 for full repetition protection.
 
-The tested allocation rule did not show a reliable benefit over no protection under bit-flip noise (error ratio 1.2709, 5/10 subjects with lower error; exploratory comparison). Under depolarizing noise its error ratio was above 1 at every tested level. It also used 16 physical qubits, compared with 12 for full repetition protection. We report this as a negative result for this particular rule, not as evidence that all sensitivity-based allocation strategies fail.
+This is a negative result for the particular 16-qubit allocation rule and settings evaluated here. It should not be interpreted as evidence that all sensitivity-based or application-aware allocation strategies are ineffective.
 
-## Statistical reporting
+## Statistical analysis and interpretation
 
-- The subject is the unit for paired inference; seeds are repeated runs, **not independent subjects**.
-- Primary error comparisons use subject-level paired Wilcoxon signed-rank tests and Holm correction across eight comparisons.
-- F1 tests are corrected separately for the same primary family.
+- The **subject** is the unit of paired inference. Seeds are repeated runs, not independent subjects.
+- Primary reconstruction-error comparisons use subject-level paired Wilcoxon signed-rank tests, with Holm correction across eight comparisons.
+- F1 comparisons are corrected separately across the same eight primary comparisons.
 - Subject-level bootstrap intervals are part of the planned reporting.
-- The primary family was selected after initial inspection and was not preregistered.
-- Most noise-level sweeps use one seed; report them as exploratory.
-- Report absolute MSE and Wasserstein values with ratios, especially where the unprotected MSE is extremely small.
+- The primary comparison family was selected after initial inspection and was not preregistered.
+- Most noise-level sweeps use one seed and should be treated as exploratory.
+- Absolute MSE and Wasserstein values should be reported alongside error ratios, especially when the unprotected MSE is very small.
 
-## Journal figure plan
+## Figures
 
-The current publication figures are in `outputs/final_figures/`. PDF and SVG versions are available; PNG versions are also generated for selected figures. Check the target journal's current figure specifications before submission.
+Publication-oriented figures are stored in `outputs/final_figures/`. PDF and SVG versions are available; PNG versions are generated for selected figures.
 
-| Planned placement | Figure content | File stem | Notes |
+| Figure | Content | File stem | Notes |
 |---|---|---|---|
-| Figure 1 | Study design | `fig0_study_design` | State that 10 subjects were used and explain the Hadamard-basis phase-code layout. |
-| Figure 2 | Noise/protection regime map | `fig1_regime_map` | Headline figure. Explain that stars refer to the eight primary comparisons only and show seed counts. |
-| Figure 3 | Paired subject-level comparisons | `fig2_paired_subjects` | Primary comparison at \(p=0.05\); display subject counts and absolute values where possible. |
-| Figure 4 | X- versus Z-output error mechanism | `fig4_mechanism_zx` | Depolarizing diagnostic panel uses four subjects and the diagnostic sweep; accurately label the seed coverage. |
-| Figure 5 | Sleep-staging forest plot | `fig3_staging_forest` | Descriptive downstream results; mark only the primary comparisons as primary. |
-| Figure 6 (optional) | Relative error across noise levels | `fig5_relative_sweep` | The level sweeps are seed 0 except where stated. Move to the supplement if the journal's figure limit requires it. |
-| Supplementary Figure S1 | Cost-benefit comparison | `fig6_cost_benefit` | Compare qubit overhead with error reduction or amplification. |
-| Supplementary Figure S2 | Absolute error | `figS1_absolute_error` | State seed coverage and that error bars are standard errors over subjects. |
-| Supplementary Figure S3 | Sleep staging across noise levels | `figS2_staging_levels` | Descriptive; state seed coverage. |
+| 1 | Study design | `fig0_study_design` | Shows the 10-subject study and phase-code layout |
+| 2 | Noise/protection regime map | `fig1_regime_map` | Stars refer to the eight primary comparisons; seed coverage should be shown |
+| 3 | Paired subject-level comparisons | `fig2_paired_subjects` | Primary comparisons at $p=0.05$ |
+| 4 | X- versus Z-output error mechanism | `fig4_mechanism_zx` | Depolarizing diagnostic panel uses four subjects; seed coverage should be stated |
+| 5 | Sleep-staging forest plot | `fig3_staging_forest` | Downstream results; only primary comparisons should be marked as primary |
+| 6 (optional) | Relative error across noise levels | `fig5_relative_sweep` | Mostly one-seed sweeps; consider supplementary placement |
+| Supplementary S1 | Cost-benefit comparison | `fig6_cost_benefit` | Qubit overhead versus error reduction or amplification |
+| Supplementary S2 | Absolute error | `figS1_absolute_error` | Error bars represent standard errors over subjects |
+| Supplementary S3 | Sleep staging across noise levels | `figS2_staging_levels` | Descriptive results; state seed coverage |
 
-Do not use the superseded early figures `fig1_noise_type_headline`, `fig2_noise_sweep_error`, `fig3_sleep_staging`, or `fig4_z_vs_x_error`, or earlier figure outputs created before the Holm-family/layout corrections.
+The earlier figures `fig1_noise_type_headline`, `fig2_noise_sweep_error`, `fig3_sleep_staging`, and `fig4_z_vs_x_error` are superseded and should not be used in the manuscript.
 
-## Reproducing the analysis
+## Reproducibility
 
 Run commands from the repository root with the project's Python environment activated.
 
-### Re-run the base study
+### 1. Set up the environment
 
-```powershell
-python scripts\run_study_v2.py
+```bash
+python -m venv .venv
 ```
 
-### Run or resume a noise sweep
+Activate the environment:
 
 ```powershell
-python scripts\run_noise_sweep.py --noise_types depolarizing --probs 0.05 --methods phase03 phase_uniform
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
 ```
 
-The sweep runner saves progress to `outputs/sweep_results.csv` and resumes from existing keys. **Implementation note:** the script currently defines a fixed `SWEEP_PATH` pointing to `outputs/sweep_results.csv`; do not assume the `--out` option redirects the file until that behavior has been fixed and tested.
-
-### Print the sweep-file summary
-
-```powershell
-python scripts\run_noise_sweep.py --summary
+```bash
+# macOS / Linux
+source .venv/bin/activate
 ```
 
-This summary describes `outputs/sweep_results.csv` by itself. For the final study tables, use the merged analysis below because the figure script draws on multiple input files.
+Install the project dependencies:
 
-### Check the logical-error calculations
-
-```powershell
-python scripts\check_code_theory.py
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-Verify this output against the code and saved results before quoting predicted-versus-measured ratio agreement in the manuscript.
+### 2. Run the base study
 
-### Regenerate tables and figures
-
-```powershell
-python scripts\make_final_figures.py
+```bash
+python scripts/run_study_v2.py
 ```
 
-The script combines study and sweep records, regenerates the tables in `outputs/final_tables.csv`, `outputs/final_summary.csv`, and `outputs/final_summary_seed0.csv`, and writes publication figures to `outputs/final_figures/`. The script comments document which source file supplies each noise regime. Use these merged outputs as the primary source for the manuscript, after checking source-row consistency.
+### 3. Run or resume a noise sweep
+
+Example: run the phase-repetition configurations under depolarizing noise at $p=0.05$.
+
+```bash
+python scripts/run_noise_sweep.py --noise_types depolarizing --probs 0.05 --methods phase03 phase_uniform
+```
+
+The sweep runner saves progress to `outputs/sweep_results.csv` and resumes from existing subject/seed/method keys. **Implementation note:** the script currently uses a fixed `SWEEP_PATH` for this output. Do not assume that `--out` redirects the output unless that behavior has been updated and tested.
+
+### 4. Check the code-theory calculations
+
+```bash
+python scripts/check_code_theory.py
+```
+
+Verify the script output against the implementation and saved results before reporting predicted-versus-measured logical-error agreement.
+
+### 5. Regenerate merged tables and figures
+
+```bash
+python scripts/make_final_figures.py
+```
+
+This script combines the study and sweep sources documented in the script, then regenerates:
+
+- `outputs/final_tables.csv`
+- `outputs/final_summary.csv`
+- `outputs/final_summary_seed0.csv`
+- Publication figures in `outputs/final_figures/`
+
+Use the merged outputs for the manuscript tables and figures after checking source-row consistency. The `--summary` option of `run_noise_sweep.py` summarizes `outputs/sweep_results.csv` alone; it is **not** the complete merged analysis.
+
+### Reproducibility notes
+
+For each reported result, retain the repository commit, Python and package versions, random seeds, run command, and source-output files. Re-running the experiments may require access to the original ANPHY-Sleep data. The saved outputs are provided to support inspection of the reported analyses; they should not be treated as a substitute for documenting the exact analysis inputs and software environment.
 
 ## Repository structure
 
@@ -169,28 +228,34 @@ QEC_BioSignal/
     └── final_figures/
 ```
 
-This is a guide to the key analysis files, not an exhaustive listing of every module or generated artifact. The final figure loader also reads the sources documented in `scripts/make_final_figures.py`.
-
-## Limitations
-
-1. **Simulation only:** noise is applied to stored output qubits, while encoding, decoding, and majority vote are noiseless. No hardware-level performance claim is made.
-2. **Limited cohort:** 10 of the 29 ANPHY-Sleep subjects and one EEG channel (C3) were used.
-3. **Limited seed coverage:** most sweeps use one seed; the primary bit-flip/phase-flip comparisons at \(p=0.05\) use three seeds.
-4. **Downstream effects are small:** sleep-stage macro-F1 changes are generally modest; two of eight primary F1 comparisons survive the stated Holm correction.
-5. **Primary family selection:** the eight-comparison family was chosen after an initial look at results and was not preregistered.
-6. **No end-to-end noisy QEC operations:** the model excludes noisy encoding/decoding gates, syndrome extraction, ancilla preparation, and measurement errors.
-7. **No validated classical baseline in the current manuscript:** a previous baseline produced unexplained results and is excluded rather than used to claim quantum superiority.
-8. **No noise-aware training or error-mitigation baseline:** those are separate potential extensions.
-9. **Allocation scope:** the negative allocation result applies to this specific 16-qubit rule and tested settings, not to every application-aware allocation method.
+This tree highlights the principal project files; it is not an exhaustive listing. The final figure-generation script may read additional sources documented in `scripts/make_final_figures.py`.
 
 ## Data and citation
 
-The study uses ANPHY-Sleep. Please cite the dataset paper when describing the source data:
+The study uses the public ANPHY-Sleep dataset. Please cite the dataset paper when describing the source data:
 
-Wei et al., “ANPHY-Sleep: an Open Sleep Database from Healthy Adults Using High-Density Scalp Electroencephalogram,” *Scientific Data* 11, 896 (2024). [https://doi.org/10.1038/s41597-024-03722-1](https://doi.org/10.1038/s41597-024-03722-1)
+> Wei et al. (2024). “ANPHY-Sleep: an Open Sleep Database from Healthy Adults Using High-Density Scalp Electroencephalogram.” *Scientific Data*, 11, 896. https://doi.org/10.1038/s41597-024-03722-1
 
-The associated manuscript is in preparation. Please do not cite the manuscript as a published paper until publication details are available.
+The associated research manuscript is in preparation. Do not cite it as a published paper until publication details are available.
 
-## License and data handling
+Raw EEG data are not included in this repository. Obtain the dataset from its original source and follow its access and usage conditions. Do not commit credentials, restricted data, or files that should not be redistributed.
 
-Add an explicit repository license before inviting reuse. Do not commit raw EEG files, credentials, or other restricted data. Preserve the source CSVs and trained weights needed to reproduce the reported tables, while clearly distinguishing canonical files from backups and duplicate diagnostic outputs.
+## Limitations
+
+1. **Simulation only.** Noise is applied during storage; encoding, decoding, and majority-vote recovery are noiseless. No quantum-hardware performance claim is made.
+2. **Limited cohort and channel coverage.** The analysis uses 10 of the 29 ANPHY-Sleep participants and only the C3 EEG channel.
+3. **Limited seed coverage.** The primary bit-flip and phase-flip comparisons at $p=0.05$ use three seeds; most noise-level sweeps use one seed.
+4. **Modest downstream effects.** Macro-F1 changes are generally small. Two of the eight primary F1 comparisons remain significant after the stated Holm correction, and the effects have opposite directions.
+5. **Post hoc primary family.** The eight-comparison family was selected after initial inspection and was not preregistered.
+6. **Idealized QEC operations.** The simulation excludes noisy encoding/decoding gates, syndrome extraction, ancilla preparation, and measurement errors.
+7. **No validated classical baseline.** The current manuscript does not use a validated classical feature-model baseline and makes no claim of quantum advantage.
+8. **No noise-aware training or error-mitigation baseline.** These are outside the scope of the current experiments.
+9. **Narrow allocation result.** The negative result applies to the specific 16-qubit allocation rule and tested settings, not to all application-aware allocation methods.
+
+## License
+
+A repository license has not yet been specified. Until a license is added, do not assume that the code or other repository contents are licensed for reuse. Confirm the intended license with all relevant authors before adding one.
+
+---
+
+**Research repository:** [IkramAlgo/QEC_BioSignal](https://github.com/IkramAlgo/QEC_BioSignal)
